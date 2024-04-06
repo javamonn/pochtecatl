@@ -25,10 +25,45 @@ impl TimePriceBars {
         }
     }
 
+    pub fn get_data_range(
+        &self,
+        start_resolution_timestamp: &ResolutionTimestamp,
+        end_resolution_timestamp: &ResolutionTimestamp,
+    ) -> Result<Vec<(ResolutionTimestamp, TimePriceBarData)>> {
+        let mut output = Vec::new();
+        for (timestamp, time_price_bar) in self
+            .data
+            .range(start_resolution_timestamp..=end_resolution_timestamp)
+        {
+            match time_price_bar {
+                TimePriceBar::Pending(time_price_bar) => match time_price_bar.data() {
+                    Some(data) => {
+                        output.push((timestamp.clone(), data.clone()));
+                    }
+                    None => {
+                        return Err(eyre!(
+                            "Expected TimePriceBar to have data, but found none at {:?}, ",
+                            timestamp
+                        ))
+                    }
+                },
+                TimePriceBar::Finalized(time_price_bar) => {
+                    output.push((timestamp.clone(), time_price_bar.data.clone()));
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
     fn prune_to_retention_count(&mut self) {
         while self.data.len() > self.retention_count as usize {
             let _ = self.data.pop_first();
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
     pub fn is_stale(&self) -> bool {
@@ -55,7 +90,7 @@ impl TimePriceBars {
                         time_price_bar.end_block_number(),
                     ) {
                         (Some(start_block_number), _)
-                            if start_block_number <= &reorged_block_number =>
+                            if start_block_number >= &reorged_block_number =>
                         {
                             // time price bar holds a whole reorged range, remove the entry
                             time_price_bar_entry.remove_entry();
@@ -159,7 +194,7 @@ impl TimePriceBars {
             }
             TimePriceBar::Pending(ref price_bar) => {
                 match price_bar.block_price_bars.last_key_value() {
-                    Some((last_block_number, block_price_bar)) if *last_block_number == block_number + 1 => {
+                    Some((last_block_number, block_price_bar)) if last_block_number + 1 == *block_number => {
                         Ok(block_price_bar.clone())
                     }
                     _ => Err(eyre!("Expected contiguous time price bars, but last Pending is disjoint or missing"))
@@ -176,6 +211,150 @@ impl TimePriceBars {
         time_price_bar.insert(*block_number, previous_block_price_bar_data)?;
 
         self.prune_to_retention_count();
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::indexer::{Resolution, ResolutionTimestamp, TimePriceBarData};
+
+    use super::TimePriceBars;
+
+    use eyre::Result;
+    use fraction::GenericFraction;
+
+    #[test]
+    pub fn test_insert_data() -> Result<()> {
+        let mut time_price_bars = TimePriceBars::new(2);
+
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+
+        let mock_data = TimePriceBarData::new(
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+        );
+
+        // test initial insert
+        time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
+        let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0], (mock_timestamp, mock_data));
+
+        // test prune to retention count
+        let next_ts = mock_timestamp.next(&Resolution::FiveMinutes);
+        time_price_bars.insert_data(next_ts, 2_u64, mock_data.clone())?;
+        let last_ts = next_ts.next(&Resolution::FiveMinutes);
+        time_price_bars.insert_data(last_ts, 3_u64, mock_data.clone())?;
+
+        let data = time_price_bars.get_data_range(&mock_timestamp, &last_ts)?;
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0], (next_ts, mock_data));
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn test_prune_to_reorged_block_number() -> Result<()> {
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+        let mock_data = TimePriceBarData::new(
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+        );
+
+        // test the base case of pending block with partial block data
+        {
+            let mut time_price_bars = TimePriceBars::new(5);
+            time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
+            time_price_bars.insert_data(mock_timestamp, 2_u64, mock_data.clone())?;
+            time_price_bars.insert_data(mock_timestamp, 3_u64, mock_data.clone())?;
+            time_price_bars.prune_to_reorged_block_number(2_u64)?;
+            let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+            assert_eq!(data.len(), 1);
+        }
+
+        // Alternate case of removing a whole time price bar
+        {
+            let mut time_price_bars = TimePriceBars::new(5);
+            time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
+            time_price_bars.insert_data(
+                mock_timestamp.next(&Resolution::FiveMinutes),
+                2_u64,
+                mock_data.clone(),
+            )?;
+            time_price_bars.insert_data(
+                mock_timestamp.next(&Resolution::FiveMinutes),
+                3_u64,
+                mock_data.clone(),
+            )?;
+            time_price_bars.prune_to_reorged_block_number(2_u64)?;
+            let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+            assert_eq!(data.len(), 1);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn test_pad_for_block() -> Result<()> {
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+
+        let mock_data = TimePriceBarData::new(
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+        );
+
+        // Test padding from pending block
+        {
+            let mut time_price_bars = TimePriceBars::new(5);
+            time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
+            time_price_bars
+                .pad_for_block(&2_u64, &mock_timestamp.next(&Resolution::FiveMinutes))?;
+            let data = time_price_bars.get_data_range(
+                &mock_timestamp,
+                &mock_timestamp.next(&Resolution::FiveMinutes),
+            )?;
+            assert_eq!(data.len(), 2);
+        }
+
+        // Test padding from finalized block
+        {
+            let mut time_price_bars = TimePriceBars::new(5);
+            time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
+            time_price_bars.finalize_range(&mock_timestamp, &mock_timestamp)?;
+            time_price_bars
+                .pad_for_block(&2_u64, &mock_timestamp.next(&Resolution::FiveMinutes))?;
+            let data = time_price_bars.get_data_range(
+                &mock_timestamp,
+                &mock_timestamp.next(&Resolution::FiveMinutes),
+            )?;
+            assert_eq!(data.len(), 2);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn test_finalize_range() -> Result<()> {
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+        let mock_data = TimePriceBarData::new(
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+            GenericFraction::new(1_u128, 1_u128),
+        );
+        let mut time_price_bars = TimePriceBars::new(5);
+        time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
+        time_price_bars.finalize_range(&mock_timestamp, &mock_timestamp)?;
+        let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+        assert_eq!(data.len(), 1);
 
         Ok(())
     }

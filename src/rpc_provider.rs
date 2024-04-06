@@ -23,7 +23,7 @@ use lru::LruCache;
 use std::sync::RwLock;
 use tokio::task::JoinSet;
 
-struct TTLCache<V> {
+pub struct TTLCache<V> {
     value: V,
     ttl: Option<std::time::Duration>,
 }
@@ -64,6 +64,22 @@ impl RpcProvider {
                 NonZeroUsize::new(1000).unwrap(),
             )),
             finalized_block_header_cache: RwLock::new(None),
+        })
+    }
+
+    #[cfg(test)]
+    pub async fn new_with_cache(
+        url: &String,
+        finalized_block_header_cache: TTLCache<Header>,
+    ) -> Result<Self> {
+        let rpc_client = RpcClient::connect_pubsub(WsConnect::new(url)).await?;
+
+        Ok(Self {
+            rpc_provider: RootProvider::<Ethereum, _>::new(rpc_client),
+            uniswap_v2_pair_token_addresses_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).unwrap(),
+            )),
+            finalized_block_header_cache: RwLock::new(Some(finalized_block_header_cache)),
         })
     }
 
@@ -173,6 +189,15 @@ impl RpcProvider {
         }
 
         Ok(token_addresses)
+    }
+
+    #[cfg(test)]
+    pub async fn get_block_header(&self, block_number: BlockNumber) -> Result<Option<Header>> {
+        self.rpc_provider
+            .get_block_by_number(block_number.into(), false)
+            .await
+            .wrap_err_with(|| format!("get_block_by_number {} failed", block_number))
+            .map(|block| block.map(|block| block.header))
     }
 
     pub async fn get_block_headers_by_range(

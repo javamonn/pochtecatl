@@ -1,15 +1,19 @@
+use crate::config;
+
 use alloy::{
     primitives::{Address, BlockHash, BlockNumber, U256},
     rpc::types::eth::Header,
 };
 use eyre::eyre;
 use fnv::FnvHashMap;
+use fraction::GenericFraction;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct UniswapV2PairTrade {
-    pub amount0_out: U256,
-    pub amount1_out: U256,
     pub amount0_in: U256,
     pub amount1_in: U256,
+    pub amount0_out: U256,
+    pub amount1_out: U256,
     pub reserve0: U256,
     pub reserve1: U256,
     pub maker: Address,
@@ -33,6 +37,48 @@ impl UniswapV2PairTrade {
             reserve0,
             reserve1,
             maker,
+        }
+    }
+
+    pub fn get_price_before(
+        &self,
+        token0_address: &Address,
+        token1_address: &Address,
+    ) -> Option<GenericFraction<u128>> {
+        let reserve0_before = self.reserve0 - self.amount0_in + self.amount0_out;
+        let reserve1_before = self.reserve1 - self.amount1_in + self.amount1_out;
+        if *token0_address == *config::WETH_ADDRESS {
+            Some(GenericFraction::new(
+                reserve0_before.to::<u128>(),
+                reserve1_before.to::<u128>(),
+            ))
+        } else if *token1_address == *config::WETH_ADDRESS {
+            Some(GenericFraction::new(
+                reserve1_before.to::<u128>(),
+                reserve0_before.to::<u128>(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_price_after(
+        &self,
+        token0_address: &Address,
+        token1_address: &Address,
+    ) -> Option<GenericFraction<u128>> {
+        if *token0_address == *config::WETH_ADDRESS {
+            Some(GenericFraction::new(
+                self.reserve0.to::<u128>(),
+                self.reserve1.to::<u128>(),
+            ))
+        } else if *token1_address == *config::WETH_ADDRESS {
+            Some(GenericFraction::new(
+                self.reserve1.to::<u128>(),
+                self.reserve0.to::<u128>(),
+            ))
+        } else {
+            None
         }
     }
 }

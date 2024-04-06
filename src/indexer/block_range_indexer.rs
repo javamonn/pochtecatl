@@ -1,7 +1,7 @@
 use crate::{abi::IUniswapV2Pair, rpc_provider::RpcProvider};
 
 use super::{
-    log_parser, time_price_bar_store::TimePriceBarStore, Block, IndexedBlockMetadata, Indexer,
+    log_parser, time_price_bar_store::TimePriceBarStore, IndexedBlockMetadata, Indexer,
     Resolution,
 };
 
@@ -15,7 +15,7 @@ use eyre::Result;
 use std::{
     cmp::min,
     sync::{
-        mpsc::{sync_channel, Receiver, SyncSender},
+        mpsc::{sync_channel, Receiver},
         Arc,
     },
 };

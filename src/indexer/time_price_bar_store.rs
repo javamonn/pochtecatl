@@ -1,12 +1,12 @@
 use super::{
-    log_parser::Block, rpc_utils::get_block_uniswap_v2_pair_token_addresses, time_price_bars,
-    BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars,
+    log_parser::Block, rpc_utils::get_block_uniswap_v2_pair_token_addresses, BlockPriceBar,
+    Resolution, ResolutionTimestamp, TimePriceBarData, TimePriceBars,
 };
 use crate::{config, rpc_provider::RpcProvider};
 
 use alloy::primitives::{Address, BlockNumber};
 
-use eyre::{Context, Result};
+use eyre::{Context, OptionExt, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
 
@@ -137,6 +137,31 @@ impl TimePriceBarStore {
         }
     }
 
+    #[cfg(test)]
+    pub fn get_time_price_bars(
+        &self,
+        pair_address: &Address,
+        start: &ResolutionTimestamp,
+        end: &ResolutionTimestamp,
+    ) -> Result<Vec<(ResolutionTimestamp, TimePriceBarData)>> {
+        self.time_price_bars
+            .read()
+            .unwrap()
+            .get(pair_address)
+            .ok_or_eyre(eyre::eyre!("Pair {} not found", pair_address))
+            .and_then(|time_price_bars| time_price_bars.get_data_range(start, end))
+    }
+
+    #[cfg(test)]
+    pub fn last_inserted_block_number(&self) -> Option<BlockNumber> {
+        *self.last_inserted_block_number.read().unwrap()
+    }
+
+    #[cfg(test)]
+    pub fn last_finalized_timestamp(&self) -> Option<ResolutionTimestamp> {
+        *self.last_finalized_timestamp.read().unwrap()
+    }
+
     pub async fn insert_block(&self, rpc_provider: Arc<RpcProvider>, block: &Block) -> Result<()> {
         let block_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(block.block_timestamp, &self.resolution);
@@ -155,9 +180,6 @@ impl TimePriceBarStore {
             )
         };
 
-        // TODO: need to handle pruning "stale" pairs without any non-carried time price bars in X
-        // blocks
-
         // Insert the new block price bars
         {
             let mut time_price_bars = self.time_price_bars.write().unwrap();
@@ -169,11 +191,20 @@ impl TimePriceBarStore {
 
                 match *last_inserted_block_number {
                     Some(last_inserted_block_number)
-                        if block.block_number < last_inserted_block_number =>
+                        if block.block_number <= last_inserted_block_number =>
                     {
-                        for pair_time_price_bars in time_price_bars.values_mut() {
+                        let mut pair_addresses_to_remove = Vec::new();
+                        for (pair_address, pair_time_price_bars) in time_price_bars.iter_mut() {
                             pair_time_price_bars
                                 .prune_to_reorged_block_number(block.block_number)?;
+
+                            if pair_time_price_bars.is_empty() {
+                                pair_addresses_to_remove.push(pair_address.clone());
+                            }
+                        }
+
+                        for pair_address in pair_addresses_to_remove.iter() {
+                            time_price_bars.remove(pair_address);
                         }
                     }
                     _ => {}
@@ -186,7 +217,7 @@ impl TimePriceBarStore {
                 block,
                 &block_resolution_timestamp,
                 &block_price_bars,
-                &self.retention_count,
+                &self.retention_count
             )?;
 
             // Perform maintenance on all price time bars to account for the newly inserted block
@@ -233,6 +264,241 @@ impl TimePriceBarStore {
         {
             let mut last_inserted_block_number = self.last_inserted_block_number.write().unwrap();
             *last_inserted_block_number = Some(block.block_number)
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::{log_parser, Block},
+        get_block_price_bars, get_timestamp_range_to_finalize, insert_block_price_bars,
+        TimePriceBarStore,
+    };
+    use crate::{
+        abi::IUniswapV2Pair,
+        config,
+        indexer::{Resolution, ResolutionTimestamp},
+        rpc_provider::{RpcProvider, TTLCache},
+    };
+
+    use alloy::{
+        primitives::{address, uint, BlockNumber},
+        rpc::types::eth::Filter,
+        sol_types::SolEvent,
+    };
+
+    use eyre::{OptionExt, Result};
+    use fnv::FnvHashMap;
+    use std::sync::Arc;
+
+    async fn get_block(rpc_provider: Arc<RpcProvider>, block_number: BlockNumber) -> Result<Block> {
+        let logs_filter = Filter::new()
+            .from_block(block_number)
+            .to_block(block_number)
+            .event_signature(vec![
+                IUniswapV2Pair::Sync::SIGNATURE_HASH,
+                IUniswapV2Pair::Swap::SIGNATURE_HASH,
+            ]);
+
+        let (header, logs) = {
+            let (header_result, logs_result) = tokio::join!(
+                rpc_provider.get_block_header(block_number),
+                rpc_provider.get_logs(&logs_filter)
+            );
+
+            (
+                header_result.and_then(|header| header.ok_or_eyre("Missing block"))?,
+                logs_result?,
+            )
+        };
+
+        log_parser::parse(&header, logs.iter().collect())
+    }
+
+    #[tokio::test]
+    async fn test_get_block_price_bars() -> Result<()> {
+        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
+        let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
+
+        let block_price_bars = get_block_price_bars(rpc_provider, &block).await;
+
+        assert_eq!(block_price_bars.len(), 4);
+        assert!(block_price_bars
+            .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+            .is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_timestamp_range_to_finalize() -> Result<()> {
+        let mock_finalized_timestamp = uint!(1000_U256);
+        let rpc_provider = {
+            let inner = RpcProvider::new(&config::RPC_URL).await?;
+            let mock_finalized_block_number = 12822402;
+            let mut mock_finalized_header = inner
+                .get_block_header(mock_finalized_block_number)
+                .await?
+                .expect("Expected block header, but found None");
+
+            mock_finalized_header.timestamp = mock_finalized_timestamp.clone();
+
+            Arc::new(
+                RpcProvider::new_with_cache(
+                    &config::RPC_URL,
+                    TTLCache::new(mock_finalized_header, None),
+                )
+                .await?,
+            )
+        };
+
+        let initial_finalize_range = get_timestamp_range_to_finalize(
+            Arc::clone(&rpc_provider),
+            &ResolutionTimestamp::zero(),
+            &None,
+            &Resolution::FiveMinutes,
+        )
+        .await
+        .expect("Expected initial_finalize_range, but found None");
+
+        assert_eq!(
+            initial_finalize_range,
+            (
+                ResolutionTimestamp::zero(),
+                ResolutionTimestamp::from_timestamp(
+                    mock_finalized_timestamp.to::<u64>(),
+                    &Resolution::FiveMinutes
+                )
+            )
+        );
+
+        let last_finalized_timestamp =
+            ResolutionTimestamp::from_timestamp(600_u64, &Resolution::FiveMinutes);
+        let finalize_range = get_timestamp_range_to_finalize(
+            Arc::clone(&rpc_provider),
+            &ResolutionTimestamp::zero(),
+            &Some(last_finalized_timestamp),
+            &Resolution::FiveMinutes,
+        )
+        .await
+        .expect("Expected finalize_range, but found None");
+
+        assert_eq!(
+            finalize_range,
+            (
+                last_finalized_timestamp.next(&Resolution::FiveMinutes),
+                ResolutionTimestamp::from_timestamp(
+                    mock_finalized_timestamp.to::<u64>(),
+                    &Resolution::FiveMinutes
+                )
+            )
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_insert_block_price_bars() -> Result<()> {
+        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
+        let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
+        let block_price_bars = get_block_price_bars(rpc_provider, &block).await;
+
+        let mut time_price_bars = FnvHashMap::default();
+
+        insert_block_price_bars(
+            &mut time_price_bars,
+            &block,
+            &ResolutionTimestamp::from_timestamp(block.block_timestamp, &Resolution::FiveMinutes),
+            &block_price_bars,
+            &5,
+        )?;
+
+        assert_eq!(time_price_bars.len(), 4);
+        assert!(time_price_bars
+            .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+            .is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_insert_block() -> Result<()> {
+        let mock_finalized_timestamp = uint!(1000_U256);
+        let rpc_provider = {
+            let inner = RpcProvider::new(&config::RPC_URL).await?;
+            let mock_finalized_block_number = 12822402;
+            let mut mock_finalized_header = inner
+                .get_block_header(mock_finalized_block_number)
+                .await?
+                .expect("Expected block header, but found None");
+
+            mock_finalized_header.timestamp = mock_finalized_timestamp.clone();
+
+            Arc::new(
+                RpcProvider::new_with_cache(
+                    &config::RPC_URL,
+                    TTLCache::new(mock_finalized_header, None),
+                )
+                .await?,
+            )
+        };
+
+        // test base case
+        {
+            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5);
+            let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
+            store
+                .insert_block(Arc::clone(&rpc_provider), &block)
+                .await?;
+
+            assert_eq!(store.last_inserted_block_number(), Some(block.block_number));
+            assert_eq!(
+                store.last_finalized_timestamp(),
+                Some(ResolutionTimestamp::from_timestamp(
+                    mock_finalized_timestamp.to::<u64>(),
+                    &Resolution::FiveMinutes
+                ))
+            );
+            assert_eq!(
+                store
+                    .get_time_price_bars(
+                        &address!("c1c52be5c93429be50f5518a582f690d0fc0528a"),
+                        &ResolutionTimestamp::zero(),
+                        &ResolutionTimestamp::from_timestamp(
+                            block.block_timestamp,
+                            &Resolution::FiveMinutes
+                        )
+                    )?
+                    .len(),
+                1
+            );
+        }
+
+        // test reorg handling
+        {
+            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5);
+            let mut blocks = Vec::new();
+
+            // Insert blocks in order
+            for block_number in 12822402..=12822404 {
+                let block = get_block(Arc::clone(&rpc_provider), block_number).await?;
+                store
+                    .insert_block(Arc::clone(&rpc_provider), &block)
+                    .await?;
+                blocks.push(block);
+            }
+
+            assert_eq!(store.last_inserted_block_number(), Some(12822404));
+
+            // Re-insert the 03 block to trigger the reorg logic
+            store
+                .insert_block(Arc::clone(&rpc_provider), &blocks[1])
+                .await?;
+
+            assert_eq!(store.last_inserted_block_number(), Some(12822403));
         }
 
         Ok(())
