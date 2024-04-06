@@ -14,6 +14,11 @@ serde_json = { version = "1.0", default_features = false, features = ["alloc"] }
 
 structured-logger = "1.0.3"
 tokio = { version = "1.37.0", features = ["full"] }
+lazy_static = "1.4.0"
+ruint = "1.12.1"
+fraction = "0.15.1"
+lru = "0.12.3"
+dotenvy = "0.15.7"
 
 alloy = { git = "https://github.com/alloy-rs/alloy", rev = "66fa192", features = [
     # "dyn-abi",
@@ -59,10 +64,6 @@ alloy-provider = { git = "https://github.com/alloy-rs/alloy", rev = "66fa192", f
     "pubsub",
     "ws",
 ] }
-lazy_static = "1.4.0"
-ruint = "1.12.1"
-fraction = "0.15.1"
-lru = "0.12.3"
 
 [patch.crates-io]
 alloy-core = { git = "https://github.com/alloy-rs/core", rev = "525a233" }

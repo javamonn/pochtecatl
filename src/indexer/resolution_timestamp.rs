@@ -1,3 +1,4 @@
+#[derive(Debug, Clone, Copy)]
 pub enum Resolution {
     FiveMinutes,
 }
@@ -10,7 +11,7 @@ impl Resolution {
     }
 }
 
-#[derive(PartialOrd, Ord, Eq, PartialEq, Clone, Copy)]
+#[derive(PartialOrd, Ord, Eq, PartialEq, Clone, Copy, Debug)]
 pub struct ResolutionTimestamp(u64);
 
 impl ResolutionTimestamp {
