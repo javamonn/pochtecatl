@@ -29,26 +29,21 @@ impl TimePriceBars {
         &self,
         start_resolution_timestamp: &ResolutionTimestamp,
         end_resolution_timestamp: &ResolutionTimestamp,
-    ) -> Result<Vec<(ResolutionTimestamp, TimePriceBarData)>> {
+    ) -> Result<Vec<(&ResolutionTimestamp, &TimePriceBarData)>> {
         let mut output = Vec::new();
         for (timestamp, time_price_bar) in self
             .data
             .range(start_resolution_timestamp..=end_resolution_timestamp)
         {
-            match time_price_bar {
-                TimePriceBar::Pending(time_price_bar) => match time_price_bar.data() {
-                    Some(data) => {
-                        output.push((timestamp.clone(), data.clone()));
-                    }
-                    None => {
-                        return Err(eyre!(
-                            "Expected TimePriceBar to have data, but found none at {:?}, ",
-                            timestamp
-                        ))
-                    }
-                },
-                TimePriceBar::Finalized(time_price_bar) => {
-                    output.push((timestamp.clone(), time_price_bar.data.clone()));
+            match time_price_bar.get_data() {
+                Some(data) => {
+                    output.push((timestamp, data));
+                }
+                None => {
+                    return Err(eyre!(
+                        "Expected TimePriceBar to have data, but found none at {:?}, ",
+                        timestamp
+                    ))
                 }
             }
         }
@@ -242,7 +237,7 @@ mod tests {
         time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
         let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
         assert_eq!(data.len(), 1);
-        assert_eq!(data[0], (mock_timestamp, mock_data));
+        assert_eq!(data[0], (&mock_timestamp, &mock_data));
 
         // test prune to retention count
         let next_ts = mock_timestamp.next(&Resolution::FiveMinutes);
@@ -252,7 +247,7 @@ mod tests {
 
         let data = time_price_bars.get_data_range(&mock_timestamp, &last_ts)?;
         assert_eq!(data.len(), 2);
-        assert_eq!(data[0], (next_ts, mock_data));
+        assert_eq!(data[0], (&next_ts, &mock_data));
 
         Ok(())
     }

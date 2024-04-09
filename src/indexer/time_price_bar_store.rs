@@ -1,48 +1,13 @@
 use super::{
-    log_parser::Block, rpc_utils::get_block_uniswap_v2_pair_token_addresses, BlockPriceBar,
-    Resolution, ResolutionTimestamp, TimePriceBarData, TimePriceBars,
+    Block, BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars,
 };
 use crate::{config, rpc_provider::RpcProvider};
 
 use alloy::primitives::{Address, BlockNumber};
 
-use eyre::{Context, OptionExt, Result};
+use eyre::{Context, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
-
-async fn get_block_price_bars(
-    rpc_provider: Arc<RpcProvider>,
-    block: &Block,
-) -> FnvHashMap<Address, BlockPriceBar> {
-    let uniswap_v2_pair_token_addresses =
-        get_block_uniswap_v2_pair_token_addresses(rpc_provider, block).await;
-
-    // Parse uniswap v2 trades into block price bars
-    block.uniswap_v2_trades.iter().fold(
-        FnvHashMap::with_capacity_and_hasher(block.uniswap_v2_trades.len(), Default::default()),
-        |mut acc, (pair_address, trades)| {
-            match uniswap_v2_pair_token_addresses.get(pair_address) {
-                Some((token0_address, token1_address)) => {
-                    if let Some(block_price_bar) = BlockPriceBar::from_uniswap_v2_trades(
-                        trades,
-                        token0_address,
-                        token1_address,
-                    ) {
-                        acc.insert(*pair_address, block_price_bar);
-                    }
-                }
-                None => {
-                    log::warn!(
-                        "Expected pair_token_addresses for {}, but found None",
-                        pair_address
-                    );
-                }
-            };
-
-            acc
-        },
-    )
-}
 
 // In a backfill we can finalize up to the last completed time bar resolution tick,
 // as we will never encounter a reorg. In peak, we can only finalize up to the
@@ -88,36 +53,6 @@ async fn get_timestamp_range_to_finalize(
     }
 }
 
-// Insert new block price bars for the block
-fn insert_block_price_bars(
-    time_price_bars: &mut FnvHashMap<Address, TimePriceBars>,
-    block: &Block,
-    block_resolution_timestamp: &ResolutionTimestamp,
-    block_price_bars: &FnvHashMap<Address, BlockPriceBar>,
-    retention_count: &u64,
-) -> Result<()> {
-    for (pair_address, block_price_bar) in block_price_bars.iter() {
-        let time_price_bars = time_price_bars
-            .entry(pair_address.clone())
-            .or_insert_with(|| TimePriceBars::new(retention_count.clone()));
-
-        time_price_bars
-            .insert_data(
-                block_resolution_timestamp.clone(),
-                block.block_number,
-                block_price_bar.clone().into(),
-            )
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to insert new block price bar for pair {}",
-                    pair_address
-                )
-            })?;
-    }
-
-    Ok(())
-}
-
 pub struct TimePriceBarStore {
     resolution: Resolution,
     time_price_bars: RwLock<FnvHashMap<Address, TimePriceBars>>,
@@ -138,18 +73,8 @@ impl TimePriceBarStore {
     }
 
     #[cfg(test)]
-    pub fn get_time_price_bars(
-        &self,
-        pair_address: &Address,
-        start: &ResolutionTimestamp,
-        end: &ResolutionTimestamp,
-    ) -> Result<Vec<(ResolutionTimestamp, TimePriceBarData)>> {
-        self.time_price_bars
-            .read()
-            .unwrap()
-            .get(pair_address)
-            .ok_or_eyre(eyre::eyre!("Pair {} not found", pair_address))
-            .and_then(|time_price_bars| time_price_bars.get_data_range(start, end))
+    pub fn time_price_bars(&self) -> &RwLock<FnvHashMap<Address, TimePriceBars>> {
+        &self.time_price_bars
     }
 
     #[cfg(test)]
@@ -166,19 +91,33 @@ impl TimePriceBarStore {
         let block_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(block.block_timestamp, &self.resolution);
 
-        let (block_price_bars, finalize_timestamp_range) = {
-            let last_finalized_timestamp = self.last_finalized_timestamp.read().unwrap().clone();
+        let last_finalized_timestamp = self.last_finalized_timestamp.read().unwrap().clone();
+        let finalize_timestamp_range = get_timestamp_range_to_finalize(
+            rpc_provider,
+            &block_resolution_timestamp,
+            &last_finalized_timestamp,
+            &self.resolution,
+        )
+        .await;
 
-            tokio::join!(
-                get_block_price_bars(Arc::clone(&rpc_provider), block),
-                get_timestamp_range_to_finalize(
-                    rpc_provider,
-                    &block_resolution_timestamp,
-                    &last_finalized_timestamp,
-                    &self.resolution
-                )
-            )
-        };
+        let block_price_bars = block.uniswap_v2_pairs.iter().fold(
+            FnvHashMap::with_capacity_and_hasher(block.uniswap_v2_pairs.len(), Default::default()),
+            |mut acc, (pair_address, pair)| {
+                match BlockPriceBar::from_uniswap_v2_pair(pair) {
+                    Some(block_price_bar) => acc.insert(*pair_address, block_price_bar),
+                    None => {
+                        log::warn!(
+                            block_number = block.block_number;
+                            "Failed to create block_price_bar for pair {}", pair_address
+                        );
+
+                        None
+                    }
+                };
+
+                acc
+            },
+        );
 
         // Insert the new block price bars
         {
@@ -212,13 +151,24 @@ impl TimePriceBarStore {
             }
 
             // Insert new BlockPriceBar items into time_price_bars
-            insert_block_price_bars(
-                &mut time_price_bars,
-                block,
-                &block_resolution_timestamp,
-                &block_price_bars,
-                &self.retention_count
-            )?;
+            for (pair_address, block_price_bar) in block_price_bars.iter() {
+                let time_price_bars = time_price_bars
+                    .entry(pair_address.clone())
+                    .or_insert_with(|| TimePriceBars::new(self.retention_count));
+
+                time_price_bars
+                    .insert_data(
+                        block_resolution_timestamp.clone(),
+                        block.block_number,
+                        block_price_bar.clone().into(),
+                    )
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to insert new block price bar for pair {}",
+                            pair_address
+                        )
+                    })?;
+            }
 
             // Perform maintenance on all price time bars to account for the newly inserted block
             let mut stale_pair_addresses = Vec::new();
@@ -272,11 +222,7 @@ impl TimePriceBarStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::{log_parser, Block},
-        get_block_price_bars, get_timestamp_range_to_finalize, insert_block_price_bars,
-        TimePriceBarStore,
-    };
+    use super::{super::Block, get_timestamp_range_to_finalize, TimePriceBarStore};
     use crate::{
         abi::IUniswapV2Pair,
         config,
@@ -291,7 +237,6 @@ mod tests {
     };
 
     use eyre::{OptionExt, Result};
-    use fnv::FnvHashMap;
     use std::sync::Arc;
 
     async fn get_block(rpc_provider: Arc<RpcProvider>, block_number: BlockNumber) -> Result<Block> {
@@ -315,22 +260,7 @@ mod tests {
             )
         };
 
-        log_parser::parse(&header, logs.iter().collect())
-    }
-
-    #[tokio::test]
-    async fn test_get_block_price_bars() -> Result<()> {
-        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
-        let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
-
-        let block_price_bars = get_block_price_bars(rpc_provider, &block).await;
-
-        assert_eq!(block_price_bars.len(), 4);
-        assert!(block_price_bars
-            .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
-            .is_some());
-
-        Ok(())
+        Block::parse(rpc_provider, &header, &logs).await
     }
 
     #[tokio::test]
@@ -401,30 +331,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_block_price_bars() -> Result<()> {
-        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
-        let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
-        let block_price_bars = get_block_price_bars(rpc_provider, &block).await;
-
-        let mut time_price_bars = FnvHashMap::default();
-
-        insert_block_price_bars(
-            &mut time_price_bars,
-            &block,
-            &ResolutionTimestamp::from_timestamp(block.block_timestamp, &Resolution::FiveMinutes),
-            &block_price_bars,
-            &5,
-        )?;
-
-        assert_eq!(time_price_bars.len(), 4);
-        assert!(time_price_bars
-            .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
-            .is_some());
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_insert_block() -> Result<()> {
         let mock_finalized_timestamp = uint!(1000_U256);
         let rpc_provider = {
@@ -464,8 +370,12 @@ mod tests {
             );
             assert_eq!(
                 store
-                    .get_time_price_bars(
-                        &address!("c1c52be5c93429be50f5518a582f690d0fc0528a"),
+                    .time_price_bars()
+                    .read()
+                    .unwrap()
+                    .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+                    .unwrap()
+                    .get_data_range(
                         &ResolutionTimestamp::zero(),
                         &ResolutionTimestamp::from_timestamp(
                             block.block_timestamp,

@@ -1,25 +1,25 @@
 use crate::{abi::IUniswapV2Pair, rpc_provider::RpcProvider};
 
 use super::{
-    log_parser, time_price_bar_store::TimePriceBarStore, IndexedBlockMetadata, Indexer,
-    Resolution,
+    time_price_bar_store::TimePriceBarStore, Block, IndexedBlockMessage, Indexer, Resolution,
 };
 
 use alloy::{
-    primitives::{BlockNumber, U256},
+    primitives::BlockNumber,
     rpc::types::eth::{Filter, Log as RpcLog},
     sol_types::SolEvent,
 };
 
-use eyre::Result;
+use eyre::{Context, Result};
 use std::{
     cmp::min,
+    collections::BTreeMap,
     sync::{
-        mpsc::{sync_channel, Receiver},
+        mpsc::{sync_channel, Receiver, SyncSender},
         Arc,
     },
 };
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 pub struct BlockRangeIndexer {
     start_block_number: BlockNumber,
@@ -44,11 +44,90 @@ impl BlockRangeIndexer {
 
 const BLOCK_RANGE_STEP_BY: u64 = 100;
 
+async fn get_parsed_blocks(
+    rpc_provider: Arc<RpcProvider>,
+    start_block_number: BlockNumber,
+    end_block_number: BlockNumber,
+) -> Result<BTreeMap<BlockNumber, Block>> {
+    let filter = Filter::new()
+        .from_block(start_block_number)
+        .to_block(end_block_number)
+        .event_signature(vec![
+            IUniswapV2Pair::Sync::SIGNATURE_HASH,
+            IUniswapV2Pair::Swap::SIGNATURE_HASH,
+        ]);
+
+    let (logs, mut headers_by_block_number) = tokio::join!(
+        rpc_provider.get_logs(&filter),
+        rpc_provider.get_block_headers_by_range(start_block_number, end_block_number)
+    );
+
+    let mut logs_by_block_number: BTreeMap<BlockNumber, Vec<RpcLog>> = logs
+        .unwrap_or_else(|err| {
+            log::error!(
+                range_start_block_number = start_block_number,
+                range_end_block_number = end_block_number;
+                "get_logs failed: {:?}", err
+            );
+            Vec::new()
+        })
+        .into_iter()
+        .fold(BTreeMap::new(), |mut acc, log| {
+            acc.entry(log.block_number.unwrap().to::<BlockNumber>())
+                .or_insert_with(Vec::new)
+                .push(log);
+
+            acc
+        });
+
+    // Parse the blocks
+    let mut tasks = JoinSet::new();
+    let mut output = BTreeMap::new();
+    for block_number in start_block_number..=end_block_number {
+        match (
+            headers_by_block_number.remove(&block_number),
+            logs_by_block_number.remove(&block_number),
+        ) {
+            (Some(block_header), Some(block_logs)) => {
+                let rpc_provider = Arc::clone(&rpc_provider);
+                tasks.spawn(async move {
+                    Block::parse(rpc_provider, &block_header, &block_logs)
+                        .await
+                        .wrap_err_with(|| format!("Block::parse failed for block {}", block_number))
+                });
+            }
+            (_, None) => {
+                log::warn!("Expected logs for block {} but found none", block_number);
+            }
+            (None, _) => {
+                log::warn!("Expected header for block {} but found none", block_number);
+            }
+        }
+    }
+
+    while let Some(block) = tasks.join_next().await {
+        match block {
+            Ok(Ok(block)) => {
+                output.insert(block.block_number, block);
+            }
+            Ok(Err(err)) => {
+                log::error!("Block::parse error: {:?}", err);
+            }
+            Err(err) => {
+                log::error!("join_next error: {:?}", err);
+            }
+        }
+    }
+
+    Ok(output)
+}
+
 async fn index_blocks(
     rpc_provider: Arc<RpcProvider>,
     time_price_bar_store: Arc<TimePriceBarStore>,
     start_block_number: BlockNumber,
     end_block_number: BlockNumber,
+    indexed_block_message_sender: SyncSender<IndexedBlockMessage>,
 ) -> Result<()> {
     for range_start_block_number in
         (start_block_number..=end_block_number).step_by(BLOCK_RANGE_STEP_BY as usize)
@@ -58,64 +137,26 @@ async fn index_blocks(
             end_block_number,
         );
 
-        let filter = Filter::new()
-            .from_block(range_start_block_number)
-            .to_block(range_end_block_number)
-            .event_signature(vec![
-                IUniswapV2Pair::Sync::SIGNATURE_HASH,
-                IUniswapV2Pair::Swap::SIGNATURE_HASH,
-            ]);
+        let parsed_blocks = get_parsed_blocks(
+            Arc::clone(&rpc_provider),
+            range_start_block_number,
+            range_end_block_number,
+        )
+        .await?;
 
-        let (logs, block_headers) = tokio::join!(
-            rpc_provider.get_logs(&filter),
-            rpc_provider
-                .get_block_headers_by_range(range_start_block_number, range_end_block_number)
-        );
-
-        let logs = logs.unwrap_or_else(|err| {
-            log::error!(
-                range_start_block_number = range_start_block_number,
-                range_end_block_number = range_end_block_number;
-                "get_logs failed: {:?}", err
-            );
-            Vec::new()
-        });
-
-        let mut block_log_start_idx = 0;
-        let mut parsed_blocks = Vec::with_capacity(BLOCK_RANGE_STEP_BY as usize);
-
-        // Parse the blocks
-        for block_number in range_start_block_number..=range_end_block_number {
-            let block_logs = {
-                let wrapped_block_number = U256::from(block_number);
-                let block_logs = logs
-                    .iter()
-                    .skip(block_log_start_idx)
-                    .take_while(|log| {
-                        log.block_number.is_some_and(|log_block_number| {
-                            log_block_number == wrapped_block_number
-                        })
-                    })
-                    .collect::<Vec<&RpcLog>>();
-                block_log_start_idx += block_logs.len();
-
-                block_logs
-            };
-
-            match block_headers.get(&block_number) {
-                Some(header) => {
-                    parsed_blocks.push(log_parser::parse(header, block_logs)?);
-                }
-                None => {
-                    log::warn!("Expected header for block {} but found none", block_number);
-                }
-            }
-        }
-
-        for block in parsed_blocks.into_iter() {
+        for parsed_block in parsed_blocks.into_values() {
             time_price_bar_store
-                .insert_block(Arc::clone(&rpc_provider), &block)
+                .insert_block(Arc::clone(&rpc_provider), &parsed_block)
                 .await?;
+
+            let (indexed_block_message, ack_receiver) =
+                IndexedBlockMessage::from_block_with_ack(&parsed_block);
+
+            // sync channel will block until the receiver receives the message
+            indexed_block_message_sender.send(indexed_block_message)?;
+
+            // because this is a backfill, we wait for the receiver to fully process the indexed block
+            ack_receiver.await?;
         }
     }
 
@@ -123,8 +164,8 @@ async fn index_blocks(
 }
 
 impl Indexer for BlockRangeIndexer {
-    fn subscribe(&mut self, rpc_provider: &Arc<RpcProvider>) -> Receiver<IndexedBlockMetadata> {
-        let (indexed_block_sender, indexed_block_receiver) = sync_channel(64);
+    fn subscribe(&mut self, rpc_provider: &Arc<RpcProvider>) -> Receiver<IndexedBlockMessage> {
+        let (indexed_block_message_sender, indexed_block_message_receiver) = sync_channel(0);
 
         let start_block_number = self.start_block_number;
         let end_block_number = self.end_block_number;
@@ -138,12 +179,17 @@ impl Indexer for BlockRangeIndexer {
                 time_price_bar_store,
                 start_block_number,
                 end_block_number,
+                indexed_block_message_sender,
             )
             .await
         });
 
         self.index_handle = Some(index_handle);
 
-        indexed_block_receiver
+        indexed_block_message_receiver
+    }
+
+    fn time_price_bar_store(&self) -> Arc<TimePriceBarStore> {
+        Arc::clone(&self.time_price_bar_store)
     }
 }
