@@ -61,6 +61,10 @@ impl FinalizedTimePriceBar {
             end_block_number,
         }
     }
+
+    pub fn data(&self) -> &TimePriceBarData {
+        &self.data
+    }
 }
 
 // Holds individual BlockPriceBars until the underlying block range has been finalized
@@ -193,6 +197,15 @@ impl TimePriceBar {
                 .ok_or_else(|| eyre!("Unable to finalize price bar"))
                 .map(|price_bar| TimePriceBar::Finalized(price_bar)),
             TimePriceBar::Finalized(_) => Err(eyre!("Price bar already finalized")),
+        }
+    }
+
+    pub fn get_data(&self) -> Option<&TimePriceBarData> {
+        match self {
+            TimePriceBar::Pending(pending_time_price_bar) => pending_time_price_bar.data().as_ref(),
+            TimePriceBar::Finalized(finalized_time_price_bar) => {
+                Some(finalized_time_price_bar.data())
+            }
         }
     }
 }

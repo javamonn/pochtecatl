@@ -1,6 +1,4 @@
-use super::log_parser::UniswapV2PairTrade;
-
-use alloy::primitives::Address;
+use super::block_parser::UniswapV2Pair;
 
 use fraction::GenericFraction;
 
@@ -24,40 +22,26 @@ impl BlockPriceBar {
         self.close = price
     }
 
-    // FIXME: open price needs to deduct trade from reserves to get pre-swap price for the block
-    pub fn from_uniswap_v2_trades(
-        trades: &Vec<UniswapV2PairTrade>,
-        token0_address: &Address,
-        token1_address: &Address,
-    ) -> Option<Self> {
-        trades.iter().fold(None, |acc, pair_trade| match acc {
+    pub fn from_uniswap_v2_pair(pair: &UniswapV2Pair) -> Option<Self> {
+        pair.trades.iter().fold(None, |acc, pair_trade| match acc {
             None => {
-                match (
-                    pair_trade.get_price_before(token0_address, token1_address),
-                    pair_trade.get_price_after(token0_address, token1_address),
-                ) {
-                    (Some(price_before), Some(price_after)) => {
-                        let (low, high) = if price_before < price_after {
-                            (price_before, price_after)
-                        } else {
-                            (price_after, price_before)
-                        };
+                let price_before = pair_trade.get_price_before(&pair.token_address);
+                let price_after = pair_trade.get_price_after(&pair.token_address);
+                let (low, high) = if price_before < price_after {
+                    (price_before, price_after)
+                } else {
+                    (price_after, price_before)
+                };
 
-                        Some(Self {
-                            open: price_before,
-                            close: price_after,
-                            high,
-                            low,
-                        })
-                    }
-                    _ => None,
-                }
+                Some(Self {
+                    open: price_before,
+                    close: price_after,
+                    high,
+                    low,
+                })
             }
             Some(mut price_bar) => {
-                pair_trade
-                    .get_price_after(token0_address, token1_address)
-                    .map(|price| price_bar.add(price));
-
+                price_bar.add(pair_trade.get_price_after(&pair.token_address));
                 Some(price_bar)
             }
         })
@@ -68,14 +52,13 @@ impl BlockPriceBar {
 mod tests {
     use super::BlockPriceBar;
 
-    use crate::indexer::log_parser::UniswapV2PairTrade;
+    use crate::indexer::block_parser::{UniswapV2Pair, UniswapV2PairTrade};
 
     use alloy::primitives::{address, uint};
 
     #[test]
-    fn test_from_uniswap_v2_trades() {
-        let token0_address = address!("4200000000000000000000000000000000000006");
-        let token1_address = address!("F7669AC505D8Eb518103fEDa96A7A12737794492");
+    fn test_from_uniswap_v2_pair() {
+        let token_address = address!("F7669AC505D8Eb518103fEDa96A7A12737794492");
         let trades = vec![
             UniswapV2PairTrade::new(
                 uint!(0_U256),
@@ -98,32 +81,24 @@ mod tests {
         ];
 
         let block_price_bar =
-            BlockPriceBar::from_uniswap_v2_trades(&trades, &token0_address, &token1_address)
+            BlockPriceBar::from_uniswap_v2_pair(&UniswapV2Pair::new(token_address, trades.clone()))
                 .expect("Expected block_price_bar, but found None");
 
         assert_eq!(
             block_price_bar.open,
-            trades[0]
-                .get_price_before(&token0_address, &token1_address)
-                .expect("Expected get_price_before, but found None")
+            trades[0].get_price_before(&token_address)
         );
         assert_eq!(
             block_price_bar.close,
-            trades[1]
-                .get_price_after(&token0_address, &token1_address)
-                .expect("Expected get_price_after, but found None")
+            trades[1].get_price_after(&token_address)
         );
         assert_eq!(
             block_price_bar.high,
-            trades[0]
-                .get_price_before(&token0_address, &token1_address)
-                .expect("Expected get_price_before, but found None")
+            trades[0].get_price_before(&token_address)
         );
         assert_eq!(
             block_price_bar.low,
-            trades[0]
-                .get_price_after(&token0_address, &token1_address)
-                .expect("Expected get_price_before, but found None")
+            trades[0].get_price_after(&token_address)
         );
     }
 }
