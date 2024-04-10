@@ -1,6 +1,4 @@
-use super::{
-    Block, BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars,
-};
+use super::{Block, BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars};
 use crate::{config, rpc_provider::RpcProvider};
 
 use alloy::primitives::{Address, BlockNumber};
@@ -279,7 +277,7 @@ mod tests {
             Arc::new(
                 RpcProvider::new_with_cache(
                     &config::RPC_URL,
-                    TTLCache::new(mock_finalized_header, None),
+                    Some(TTLCache::new(mock_finalized_header, None)),
                 )
                 .await?,
             )
@@ -346,7 +344,7 @@ mod tests {
             Arc::new(
                 RpcProvider::new_with_cache(
                     &config::RPC_URL,
-                    TTLCache::new(mock_finalized_header, None),
+                    Some(TTLCache::new(mock_finalized_header, None)),
                 )
                 .await?,
             )

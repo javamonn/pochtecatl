@@ -20,56 +20,25 @@ fraction = "0.15.1"
 lru = "0.12.3"
 dotenvy = "0.15.7"
 
-alloy = { git = "https://github.com/alloy-rs/alloy", rev = "66fa192", features = [
-    # "dyn-abi",
-    # "json-abi",
-    # "json",
-    "sol-types",
-    # "rlp",
-    # "serde",
+alloy = { git = "https://github.com/alloy-rs/alloy", rev = "bfd0fda", features = [
     "contract",
-    # "consensus",
-    # "eips",
     "network",
-    # "genesis",
-    "node-bindings",
+    # "node-bindings",
     "providers",
-    "rpc",
-    # "json-rpc",
+    "provider-http",
+    # "provider-ipc",
+    "provider-ws",
     "rpc-client",
-    # "rpc-types",
+    # "rpc-client-ipc",
+    "rpc-client-ws",
     "rpc-types-eth",
-    # "rpc-types-engine",
     "rpc-types-trace",
     "signers",
-    # "signer-aws",
-    # "signer-gcp",
-    "signer-keystore",
-    "signer-ledger",
-    "signer-mnemonic",
-    "signer-trezor",
+    # "signer-keystore",
+    # "signer-ledger",
+    # "signer-mnemonic",
+    # "signer-trezor",
     "signer-wallet",
-    "signer-yubihsm",
-    "transports",
-    "transport-http",
-    "transport-ipc",
-    "transport-ws",
-    "pubsub",
+    # "signer-yubihsm",
 ] }
-# Temp dependency fix to enable relevant features - Ref: https://github.com/alloy-rs/examples/pull/3#discussion_r1537842062
-alloy-rpc-client = { git = "https://github.com/alloy-rs/alloy", rev = "66fa192", features = [
-    "pubsub",
-] }
-alloy-provider = { git = "https://github.com/alloy-rs/alloy", rev = "66fa192", features = [
-    "pubsub",
-    "ws",
-] }
-
-[patch.crates-io]
-alloy-core = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
-alloy-dyn-abi = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
-alloy-json-abi = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
-alloy-primitives = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
-alloy-sol-macro = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
-alloy-sol-types = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
-syn-solidity = { git = "https://github.com/alloy-rs/core", rev = "525a233" }
+hex = "0.4.3"

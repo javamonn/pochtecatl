@@ -52,7 +52,7 @@ impl Block {
         for (idx, log) in logs.iter().enumerate() {
             // Try to parse a uniswap v2 trade
             if let Some(uniswap_v2_pair_trade) = UniswapV2PairTrade::parse(log, logs, idx) {
-                uniswap_v2_pairs.push((log.address, uniswap_v2_pair_trade));
+                uniswap_v2_pairs.push((log.address(), uniswap_v2_pair_trade));
             }
         }
 
@@ -187,7 +187,6 @@ mod tests {
     #[tokio::test]
     async fn test_parse() -> eyre::Result<()> {
         let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
-
         let block_number = 12822402;
         let logs_filter = Filter::new()
             .from_block(block_number)
