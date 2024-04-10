@@ -4,11 +4,13 @@ mod indexer;
 mod primitives;
 mod rpc_provider;
 mod strategies;
+mod trade_position_controller;
 
 use indexer::BlockRangeIndexer;
 use primitives::BlockId;
 use rpc_provider::RpcProvider;
 use strategies::UniswapV2MomentumStrategy;
+use trade_position_controller::TradePositionController;
 
 use eyre::{eyre, Result};
 use std::sync::Arc;
@@ -48,12 +50,18 @@ async fn main() -> Result<()> {
     let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
 
     let mut price_indexer = make_price_indexer(&config::START_BLOCK_ID, &config::END_BLOCK_ID)?;
-    let mut strategy = UniswapV2MomentumStrategy::new(price_indexer.time_price_bar_store());
+    let trade_position_controller =
+        Arc::new(TradePositionController::new(Arc::clone(&rpc_provider)));
+
+    let mut strategy = UniswapV2MomentumStrategy::new(
+        rpc_provider.signer_address(),
+        price_indexer.time_price_bar_store(),
+        trade_position_controller,
+    );
 
     // start the block indexer and strategy
     let indexed_block_message_receiver = price_indexer.subscribe(&rpc_provider);
     strategy.exec(indexed_block_message_receiver);
-
 
     // wait for the strategy to finish
     strategy.join().await

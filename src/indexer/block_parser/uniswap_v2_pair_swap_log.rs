@@ -3,12 +3,12 @@ use crate::abi::IUniswapV2Pair;
 use alloy::{primitives::Log, rpc::types::eth::Log as RpcLog, sol_types::SolEvent};
 
 pub fn parse(log: &RpcLog) -> Option<Log<IUniswapV2Pair::Swap>> {
-    match log.topics.get(0) {
+    match log.topics().get(0) {
         Some(event_signature) if *event_signature == IUniswapV2Pair::Swap::SIGNATURE_HASH => {
-            IUniswapV2Pair::Swap::decode_raw_log(&log.topics, &log.data, cfg!(debug_assertions))
+            IUniswapV2Pair::Swap::decode_log_data(log.data(), cfg!(debug_assertions))
                 .ok()
                 .map(|data| Log {
-                    address: log.address,
+                    address: log.address(),
                     data,
                 })
         }

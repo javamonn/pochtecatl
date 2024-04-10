@@ -73,7 +73,7 @@ async fn get_parsed_blocks(
         })
         .into_iter()
         .fold(BTreeMap::new(), |mut acc, log| {
-            acc.entry(log.block_number.unwrap().to::<BlockNumber>())
+            acc.entry(log.block_number.unwrap())
                 .or_insert_with(Vec::new)
                 .push(log);
 
@@ -191,5 +191,28 @@ impl Indexer for BlockRangeIndexer {
 
     fn time_price_bar_store(&self) -> Arc<TimePriceBarStore> {
         Arc::clone(&self.time_price_bar_store)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_parsed_blocks;
+
+    use crate::{config, rpc_provider::RpcProvider};
+
+    use eyre::Result;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_get_parsed_blocks() -> Result<()> {
+        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
+
+        let parsed_blocks =
+            get_parsed_blocks(rpc_provider, 12822402, 12822404).await?;
+
+        assert_eq!(parsed_blocks.len(), 3);
+        assert!(parsed_blocks.contains_key(&12822402));
+
+        Ok(())
     }
 }

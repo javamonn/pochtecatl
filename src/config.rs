@@ -1,6 +1,6 @@
 use crate::primitives::BlockId;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, FixedBytes};
 
 use eyre::Context;
 use lazy_static::lazy_static;
@@ -36,6 +36,25 @@ lazy_static! {
         .wrap_err("Failed to read WETH_ADDRESS from env")
         .and_then(|a| a.parse().wrap_err("Failed to parse WETH_ADDRESS"))
         .unwrap();
+    pub static ref EXECUTOR_ADDRESS: Address = get_env_var("EXECUTOR_ADDRESS")
+        .wrap_err("Failed to read EXECUTOR_ADDRESS from env")
+        .and_then(|a| a.parse().wrap_err("Failed to parse EXECUTOR_ADDRESS"))
+        .unwrap();
+    pub static ref UNISWAP_V2_ROUTER_02_ADDRESS: Address =
+        get_env_var("UNISWAP_V2_ROUTER_02_ADDRESS")
+            .wrap_err("Failed to read UNISWAP_V2_ROUTER_02_ADDRESS from env")
+            .and_then(|a| a
+                .parse()
+                .wrap_err("Failed to parse UNISWAP_V2_ROUTER_02_ADDRESS"))
+            .unwrap();
+    pub static ref WALLET_PRIVATE_KEY: FixedBytes<32> =
+        get_env_var("WALLET_PRIVATE_KEY")
+            .wrap_err("Failed to read WALLET_PRIVATE_KEY from env")
+            .and_then(|key| hex::decode(&key).wrap_err("Failed to decode WALLET_PRIVATE_KEY"))
+            .and_then(
+                |key| FixedBytes::try_from(key.as_slice()).wrap_err("Failed to create FixedBytes")
+            )
+            .unwrap();
     pub static ref IS_BACKFILL: bool = match (END_BLOCK_ID.deref(), START_BLOCK_ID.deref()) {
         (BlockId::Latest, BlockId::Latest) => false,
         _ => true,

@@ -1,26 +1,33 @@
+use crate::{abi::IUniswapV2Pair, config};
+
+use alloy::{
+    network::{Ethereum, EthereumSigner},
+    primitives::{Address, BlockNumber, Bytes},
+    providers::{
+        layers::{GasEstimatorProvider, ManagedNonceProvider, SignerProvider},
+        Provider, ProviderBuilder, RootProvider,
+    },
+    pubsub::PubSubFrontend,
+    rpc::{
+        client::WsConnect,
+        types::eth::{
+            BlockNumberOrTag, Filter, Header, Log, TransactionReceipt, TransactionRequest,
+        },
+    },
+    signers::wallet::LocalWallet,
+    sol_types::SolCall,
+    transports::TransportResult,
+};
+
+use eyre::{eyre, Result, WrapErr};
+use lru::LruCache;
 use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
     ops::Deref,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, RwLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-
-use crate::{abi::IUniswapV2Pair, config};
-
-use alloy::{
-    network::Ethereum,
-    primitives::{Address, BlockNumber, Bytes},
-    pubsub::PubSubFrontend,
-    rpc::types::eth::{BlockNumberOrTag, Filter, Header, Log, TransactionRequest},
-    sol_types::SolCall,
-    transports::TransportResult,
-};
-use alloy_provider::{Provider, RootProvider};
-use alloy_rpc_client::{RpcClient, WsConnect};
-
-use eyre::{eyre, Result, WrapErr};
-use lru::LruCache;
-use std::sync::RwLock;
 use tokio::task::JoinSet;
 
 pub struct TTLCache<V> {
@@ -46,49 +53,86 @@ impl<V> TTLCache<V> {
     }
 }
 
+type AlloyRpcProvider = SignerProvider<
+    PubSubFrontend,
+    GasEstimatorProvider<
+        PubSubFrontend,
+        ManagedNonceProvider<PubSubFrontend, RootProvider<PubSubFrontend>>,
+        Ethereum,
+    >,
+    EthereumSigner,
+>;
+
 pub struct RpcProvider {
-    rpc_provider: RootProvider<Ethereum, PubSubFrontend>,
+    signer_address: Address,
+    rpc_provider: Arc<AlloyRpcProvider>,
 
     // caches
     uniswap_v2_pair_token_addresses_cache: RwLock<LruCache<Address, (Address, Address)>>,
     finalized_block_header_cache: RwLock<Option<TTLCache<Header>>>,
 }
 
+async fn make_provider(url: &String) -> Result<(AlloyRpcProvider, Address)> {
+    let signer = LocalWallet::from_bytes(&config::WALLET_PRIVATE_KEY)?;
+
+    let signer_address = signer.address();
+
+    let provider = ProviderBuilder::new()
+        .signer(EthereumSigner::from(signer))
+        .with_gas_estimation()
+        .with_nonce_management()
+        .on_ws(WsConnect::new(url))
+        .await
+        .map_err(|err| eyre!("Failed to create provider: {:?}", err))?;
+
+    Ok((provider, signer_address))
+}
+
 impl RpcProvider {
     pub async fn new(url: &String) -> Result<Self> {
-        let rpc_client = RpcClient::connect_pubsub(WsConnect::new(url)).await?;
-
-        Ok(Self {
-            rpc_provider: RootProvider::<Ethereum, _>::new(rpc_client),
-            uniswap_v2_pair_token_addresses_cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(1000).unwrap(),
-            )),
-            finalized_block_header_cache: RwLock::new(None),
-        })
+        Self::new_with_cache(url, None).await
     }
 
-    #[cfg(test)]
     pub async fn new_with_cache(
         url: &String,
-        finalized_block_header_cache: TTLCache<Header>,
+        finalized_block_header_cache: Option<TTLCache<Header>>,
     ) -> Result<Self> {
-        let rpc_client = RpcClient::connect_pubsub(WsConnect::new(url)).await?;
+        let (provider, signer_address) = make_provider(url).await?;
 
         Ok(Self {
-            rpc_provider: RootProvider::<Ethereum, _>::new(rpc_client),
+            rpc_provider: Arc::new(provider),
+            signer_address,
             uniswap_v2_pair_token_addresses_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).unwrap(),
             )),
-            finalized_block_header_cache: RwLock::new(Some(finalized_block_header_cache)),
+            finalized_block_header_cache: RwLock::new(finalized_block_header_cache),
         })
     }
 
     // eth api
+    pub async fn send_transaction(
+        &self,
+        tx_request: TransactionRequest,
+    ) -> Result<TransactionReceipt> {
+        self.rpc_provider
+            .send_transaction(tx_request)
+            .await?
+            .with_timeout(Some(Duration::from_secs(10)))
+            .with_required_confirmations(1)
+            .get_receipt()
+            .await
+            .wrap_err("send_transaction failed")
+    }
+
     pub async fn get_logs(&self, filter: &Filter) -> TransportResult<Vec<Log>> {
         self.rpc_provider.get_logs(filter).await
     }
 
     // custom api
+    pub fn signer_address(&self) -> Address {
+        self.signer_address
+    }
+
     pub async fn get_finalized_block_header(&self) -> Result<Header> {
         // Return value from cache if it exists
         {
@@ -209,7 +253,7 @@ impl RpcProvider {
         let mut output = BTreeMap::new();
 
         for block_number in start_block_number..=end_block_number {
-            let rpc_provider = self.rpc_provider.clone();
+            let rpc_provider = Arc::clone(&self.rpc_provider);
             tasks.spawn(async move {
                 match rpc_provider
                     .get_block_by_number(BlockNumberOrTag::Number(block_number), false)

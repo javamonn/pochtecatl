@@ -48,10 +48,10 @@ impl UniswapV2PairTrade {
                     // Ensure prev log in the arr is the previous log index in the
                     // same block for the same pair
                     if prev_log.block_hash == log.block_hash
-                        && prev_log.address == log.address
+                        && prev_log.address() == log.address()
                         && prev_log.log_index.is_some_and(|prev_log_index| {
                             log.log_index.is_some_and(|log_index| {
-                                prev_log_index + uint!(1_U256) == log_index
+                                prev_log_index + 1 == log_index
                             })
                         })
                     {
