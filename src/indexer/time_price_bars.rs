@@ -1,4 +1,7 @@
-use super::{PendingTimePriceBar, ResolutionTimestamp, TimePriceBar, TimePriceBarData};
+use super::{
+    Indicators, PendingTimePriceBar, Resolution, ResolutionTimestamp, TimePriceBar,
+    TimePriceBarData,
+};
 
 use alloy::primitives::BlockNumber;
 
@@ -8,24 +11,50 @@ use std::collections::BTreeMap;
 pub struct TimePriceBars {
     data: BTreeMap<ResolutionTimestamp, TimePriceBar>,
 
+    resolution: Resolution,
+
     // How many historical TimePriceBars to retain. Once exceeded, oldest are
     // pruned first.
     retention_count: u64,
 
     // The last resolution timestamp with inserted (i.e. non-padded) data
     last_inserted_timestamp_with_data: Option<ResolutionTimestamp>,
+
+    // The last finalized timestamp
+    last_finalized_timestamp: Option<ResolutionTimestamp>,
 }
 
 impl TimePriceBars {
-    pub fn new(retention_count: u64) -> Self {
+    pub fn new(retention_count: u64, resolution: Resolution) -> Self {
         Self {
             data: BTreeMap::new(),
             retention_count,
+            resolution,
             last_inserted_timestamp_with_data: None,
+            last_finalized_timestamp: None,
         }
     }
 
-    pub fn get_data_range(
+    pub fn data(&self) -> &BTreeMap<ResolutionTimestamp, TimePriceBar> {
+        &self.data
+    }
+
+    pub fn resolution(&self) -> &Resolution {
+        &self.resolution
+    }
+
+    pub fn last_finalized_timestamp(&self) -> Option<&ResolutionTimestamp> {
+        self.last_finalized_timestamp.as_ref()
+    }
+
+    pub fn time_price_bar(&self, timestamp: &ResolutionTimestamp) -> Option<&TimePriceBarData> {
+        self.data
+            .get(timestamp)
+            .and_then(|time_price_bar| time_price_bar.data())
+    }
+
+    #[cfg(test)]
+    pub fn time_price_bar_range(
         &self,
         start_resolution_timestamp: &ResolutionTimestamp,
         end_resolution_timestamp: &ResolutionTimestamp,
@@ -35,7 +64,7 @@ impl TimePriceBars {
             .data
             .range(start_resolution_timestamp..=end_resolution_timestamp)
         {
-            match time_price_bar.get_data() {
+            match time_price_bar.data() {
                 Some(data) => {
                     output.push((timestamp, data));
                 }
@@ -49,6 +78,37 @@ impl TimePriceBars {
         }
 
         Ok(output)
+    }
+
+    pub fn indicators_range(
+        &self,
+        start_resolution_timestamp: &ResolutionTimestamp,
+        end_resolution_timestamp: &ResolutionTimestamp,
+    ) -> Vec<&Indicators> {
+        /*
+        let mut output = Vec::new();
+
+        for (timestamp, time_price_bar) in self
+            .data
+            .range(start_resolution_timestamp..=end_resolution_timestamp)
+        {
+            match time_price_bar {
+                TimePriceBar::Finalized(finalized_time_price_bar) => {
+                    output.push(BoxedIndicators::Ref(finalized_time_price_bar.indicators()));
+                }
+                TimePriceBar::Pending(pending_time_price_bar) => {
+                    output.push(BoxedIndicators::Owned(Indicators::new(
+                        pending_time_price_bar,
+                        timestamp,
+                        &self,
+                    )));
+                }
+            }
+        }
+
+        output
+        */
+        unimplemented!()
     }
 
     fn prune_to_retention_count(&mut self) {
@@ -73,10 +133,34 @@ impl TimePriceBars {
         }
     }
 
+    pub fn update_indicators(&mut self, timestamp: &ResolutionTimestamp) -> Result<()> {
+        let indicators = Indicators::compute(timestamp, self.resolution(), self.data());
+        self.data
+            .get_mut(timestamp)
+            .ok_or_else(|| {
+                eyre!(
+                    "Failed to find Pending TimePriceBar at time {:?}",
+                    timestamp
+                )
+            })
+            .and_then(|time_price_bar| match time_price_bar {
+                TimePriceBar::Pending(ref mut pending_time_price_bar) => {
+                    pending_time_price_bar.set_indicators(indicators);
+                    Ok(())
+                }
+                TimePriceBar::Finalized(_) => Err(eyre!(
+                    "Expected Pending TimePriceBar at time {:?}, but found Finalized",
+                    timestamp
+                )),
+            })
+    }
+
     pub fn prune_to_reorged_block_number(
         &mut self,
         reorged_block_number: BlockNumber,
     ) -> Result<()> {
+        let mut pruned_timestamp = None;
+
         while let Some(mut time_price_bar_entry) = self.data.last_entry() {
             match time_price_bar_entry.get_mut() {
                 TimePriceBar::Pending(time_price_bar) => {
@@ -94,8 +178,9 @@ impl TimePriceBars {
                             if end_block_number >= &reorged_block_number =>
                         {
                             // prune the block price bar data within this time price bar on the
-                            // boundary, then we're done
+                            // boundary, then we're done in the next iteration
                             time_price_bar.prune_to_reorged_block_number(reorged_block_number);
+                            pruned_timestamp = Some(time_price_bar_entry.key().clone());
                         }
                         (Some(_), Some(_)) => break,
                         (None, None) => {
@@ -115,6 +200,11 @@ impl TimePriceBars {
             }
         }
 
+        // If we pruned a time price bar, we have to recompute the indicators
+        if let Some(pruned_timestamp) = pruned_timestamp {
+            self.update_indicators(&pruned_timestamp)?;
+        }
+
         Ok(())
     }
 
@@ -129,7 +219,31 @@ impl TimePriceBars {
             .entry(block_resolution_timestamp.clone())
             .or_insert_with(|| TimePriceBar::Pending(PendingTimePriceBar::new()));
 
-        time_price_bar.insert(block_number, data)?;
+        // Insert the data into the time price bar
+        match time_price_bar {
+            TimePriceBar::Pending(pending_time_price_bar)
+                if pending_time_price_bar
+                    .end_block_number()
+                    .map(|end_block_number| end_block_number + 1 == block_number)
+                    .unwrap_or(true) =>
+            {
+                pending_time_price_bar.insert_block_price_bar(block_number, data);
+            }
+            TimePriceBar::Pending(_) => {
+                return Err(eyre!(
+                    "Attempted to insert non-contiguous block number {:?} into Pending TimePriceBar at time {:?}",
+                    block_number,
+                    block_resolution_timestamp
+                ));
+            }
+            TimePriceBar::Finalized(_) => {
+                return Err(eyre!(
+                    "Expected Pending TimePriceBar at time {:?} / number {:?}, but found Finalized",
+                    block_resolution_timestamp,
+                    block_number
+                ));
+            }
+        }
 
         // Update last inserted timestamp with data
         match self.last_inserted_timestamp_with_data {
@@ -141,6 +255,7 @@ impl TimePriceBars {
         };
 
         self.prune_to_retention_count();
+        self.update_indicators(&block_resolution_timestamp)?;
 
         Ok(())
     }
@@ -150,17 +265,41 @@ impl TimePriceBars {
         start_resolution_timestamp: &ResolutionTimestamp,
         end_resolution_timestamp: &ResolutionTimestamp,
     ) -> Result<()> {
-        for (_, price_bar) in self
+        let mut finalized = Vec::new();
+
+        // FIXME: can do this in a range mut
+        for (timestamp, price_bar) in self
             .data
-            .range_mut(start_resolution_timestamp..=end_resolution_timestamp)
+            .range(start_resolution_timestamp..=end_resolution_timestamp)
         {
-            match price_bar.into_finalized() {
-                Ok(finalized_price_bar) => *price_bar = finalized_price_bar,
-                Err(err) => {
-                    log::warn!("Failed to finalize price bar: {:?}", err)
+            match price_bar {
+                TimePriceBar::Pending(pending_time_price_bar) => {
+                    match pending_time_price_bar.as_finalized() {
+                        Some(finalized_time_price_bar) => {
+                            finalized.push((
+                                timestamp.clone(),
+                                TimePriceBar::Finalized(finalized_time_price_bar),
+                            ));
+                        }
+                        None => {
+                            return Err(eyre!(
+                                "Failed to finalize Pending TimePriceBar at {:?}",
+                                timestamp
+                            ))
+                        }
+                    }
+                }
+                TimePriceBar::Finalized(_) => {
+                    return Err(eyre!("Expected Pending TimePriceBar, but found Finalized"));
                 }
             }
         }
+
+        for (timestamp, finalized_time_price_bar) in finalized {
+            self.data.insert(timestamp, finalized_time_price_bar);
+        }
+
+        self.last_finalized_timestamp = Some(end_resolution_timestamp.clone());
 
         Ok(())
     }
@@ -203,9 +342,21 @@ impl TimePriceBars {
             .entry(block_resolution_timestamp.clone())
             .or_insert_with(|| TimePriceBar::Pending(PendingTimePriceBar::new()));
 
-        time_price_bar.insert(*block_number, previous_block_price_bar_data)?;
+        match time_price_bar {
+            TimePriceBar::Pending(pending_time_price_bar) => {
+                pending_time_price_bar
+                    .insert_block_price_bar(*block_number, previous_block_price_bar_data);
+            }
+            TimePriceBar::Finalized(_) => {
+                return Err(eyre!(
+                    "Expected Pending TimePriceBar at time {:?}, but found Finalized",
+                    block_resolution_timestamp
+                ));
+            }
+        }
 
         self.prune_to_retention_count();
+        self.update_indicators(block_resolution_timestamp)?;
 
         Ok(())
     }
@@ -222,9 +373,9 @@ mod tests {
 
     #[test]
     pub fn test_insert_data() -> Result<()> {
-        let mut time_price_bars = TimePriceBars::new(2);
+        let mut time_price_bars = TimePriceBars::new(2, Resolution::FiveMinutes);
 
-        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
 
         let mock_data = TimePriceBarData::new(
             GenericFraction::new(1_u128, 1_u128),
@@ -235,7 +386,7 @@ mod tests {
 
         // test initial insert
         time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
-        let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
         assert_eq!(data.len(), 1);
         assert_eq!(data[0], (&mock_timestamp, &mock_data));
 
@@ -245,7 +396,7 @@ mod tests {
         let last_ts = next_ts.next(&Resolution::FiveMinutes);
         time_price_bars.insert_data(last_ts, 3_u64, mock_data.clone())?;
 
-        let data = time_price_bars.get_data_range(&mock_timestamp, &last_ts)?;
+        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &last_ts)?;
         assert_eq!(data.len(), 2);
         assert_eq!(data[0], (&next_ts, &mock_data));
 
@@ -254,7 +405,7 @@ mod tests {
 
     #[test]
     pub fn test_prune_to_reorged_block_number() -> Result<()> {
-        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
         let mock_data = TimePriceBarData::new(
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
@@ -264,18 +415,18 @@ mod tests {
 
         // test the base case of pending block with partial block data
         {
-            let mut time_price_bars = TimePriceBars::new(5);
+            let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
             time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
             time_price_bars.insert_data(mock_timestamp, 2_u64, mock_data.clone())?;
             time_price_bars.insert_data(mock_timestamp, 3_u64, mock_data.clone())?;
             time_price_bars.prune_to_reorged_block_number(2_u64)?;
-            let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+            let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
             assert_eq!(data.len(), 1);
         }
 
         // Alternate case of removing a whole time price bar
         {
-            let mut time_price_bars = TimePriceBars::new(5);
+            let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
             time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
             time_price_bars.insert_data(
                 mock_timestamp.next(&Resolution::FiveMinutes),
@@ -288,7 +439,7 @@ mod tests {
                 mock_data.clone(),
             )?;
             time_price_bars.prune_to_reorged_block_number(2_u64)?;
-            let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+            let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
             assert_eq!(data.len(), 1);
         }
 
@@ -297,7 +448,7 @@ mod tests {
 
     #[test]
     pub fn test_pad_for_block() -> Result<()> {
-        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
 
         let mock_data = TimePriceBarData::new(
             GenericFraction::new(1_u128, 1_u128),
@@ -308,11 +459,11 @@ mod tests {
 
         // Test padding from pending block
         {
-            let mut time_price_bars = TimePriceBars::new(5);
+            let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
             time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
             time_price_bars
                 .pad_for_block(&2_u64, &mock_timestamp.next(&Resolution::FiveMinutes))?;
-            let data = time_price_bars.get_data_range(
+            let data = time_price_bars.time_price_bar_range(
                 &mock_timestamp,
                 &mock_timestamp.next(&Resolution::FiveMinutes),
             )?;
@@ -321,12 +472,12 @@ mod tests {
 
         // Test padding from finalized block
         {
-            let mut time_price_bars = TimePriceBars::new(5);
+            let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
             time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
             time_price_bars.finalize_range(&mock_timestamp, &mock_timestamp)?;
             time_price_bars
                 .pad_for_block(&2_u64, &mock_timestamp.next(&Resolution::FiveMinutes))?;
-            let data = time_price_bars.get_data_range(
+            let data = time_price_bars.time_price_bar_range(
                 &mock_timestamp,
                 &mock_timestamp.next(&Resolution::FiveMinutes),
             )?;
@@ -338,17 +489,18 @@ mod tests {
 
     #[test]
     pub fn test_finalize_range() -> Result<()> {
-        let mock_timestamp = ResolutionTimestamp::from_timestamp(100, &Resolution::FiveMinutes);
+        // structured_logger::Builder::with_level("warn").init();
+        let mock_timestamp = ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
         let mock_data = TimePriceBarData::new(
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
         );
-        let mut time_price_bars = TimePriceBars::new(5);
+        let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
         time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
         time_price_bars.finalize_range(&mock_timestamp, &mock_timestamp)?;
-        let data = time_price_bars.get_data_range(&mock_timestamp, &mock_timestamp)?;
+        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
         assert_eq!(data.len(), 1);
 
         Ok(())

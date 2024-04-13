@@ -70,9 +70,12 @@ impl TimePriceBarStore {
         }
     }
 
-    #[cfg(test)]
     pub fn time_price_bars(&self) -> &RwLock<FnvHashMap<Address, TimePriceBars>> {
         &self.time_price_bars
+    }
+
+    pub fn resolution(&self) -> &Resolution {
+        &self.resolution
     }
 
     #[cfg(test)]
@@ -152,7 +155,7 @@ impl TimePriceBarStore {
             for (pair_address, block_price_bar) in block_price_bars.iter() {
                 let time_price_bars = time_price_bars
                     .entry(pair_address.clone())
-                    .or_insert_with(|| TimePriceBars::new(self.retention_count));
+                    .or_insert_with(|| TimePriceBars::new(self.retention_count, self.resolution));
 
                 time_price_bars
                     .insert_data(
@@ -373,7 +376,7 @@ mod tests {
                     .unwrap()
                     .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
                     .unwrap()
-                    .get_data_range(
+                    .time_price_bar_range(
                         &ResolutionTimestamp::zero(),
                         &ResolutionTimestamp::from_timestamp(
                             block.block_timestamp,

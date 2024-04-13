@@ -56,3 +56,25 @@ pub fn swap_exact_eth_for_tokens_tx_request(
         .with_value(input_eth_amount)
         .with_input(data.into())
 }
+
+pub fn swap_exact_tokens_for_eth_tx_request(
+    signer_address: Address,
+    input_token_amount: U256,
+    output_eth_amount_min: U256,
+    input_token_address: Address,
+    deadline: U256,
+) -> TransactionRequest {
+    let data = IUniswapV2Router02::swapExactTokensForETHCall {
+        amountIn: input_token_amount,
+        amountOutMin: output_eth_amount_min,
+        path: vec![input_token_address, *config::WETH_ADDRESS],
+        to: signer_address,
+        deadline: U256::from(deadline),
+    }
+    .abi_encode();
+
+    TransactionRequest::default()
+        .with_from(signer_address)
+        .with_to(Into::<TxKind>::into(*config::UNISWAP_V2_ROUTER_02_ADDRESS))
+        .with_input(data.into())
+}

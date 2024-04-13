@@ -1,8 +1,8 @@
 use crate::{abi::IUniswapV2Pair, config};
 
 use alloy::{
-    network::{Ethereum, EthereumSigner},
-    primitives::{Address, BlockNumber, Bytes},
+    network::{Ethereum, EthereumSigner, TransactionBuilder},
+    primitives::{Address, BlockNumber, Bytes, U256},
     providers::{
         layers::{GasEstimatorProvider, ManagedNonceProvider, SignerProvider},
         Provider, ProviderBuilder, RootProvider,
@@ -10,8 +10,12 @@ use alloy::{
     pubsub::PubSubFrontend,
     rpc::{
         client::WsConnect,
-        types::eth::{
-            BlockNumberOrTag, Filter, Header, Log, TransactionReceipt, TransactionRequest,
+        types::{
+            eth::{
+                BlockId, BlockNumberOrTag, Filter, Header, Log, TransactionReceipt,
+                TransactionRequest,
+            },
+            trace::parity::{TraceResults, TraceType},
         },
     },
     signers::wallet::LocalWallet,
@@ -109,6 +113,17 @@ impl RpcProvider {
         })
     }
 
+    pub async fn trace_call_many(
+        &self,
+        tx_requests: &[(TransactionRequest, Vec<TraceType>)],
+        block_id: Option<BlockId>,
+    ) -> Result<TraceResults> {
+        self.rpc_provider
+            .trace_call_many(tx_requests, block_id)
+            .await
+            .wrap_err("trace_call_many failed")
+    }
+
     // eth api
     pub async fn send_transaction(
         &self,
@@ -171,6 +186,33 @@ impl RpcProvider {
         }
 
         Ok(result)
+    }
+
+    pub async fn get_uniswap_v2_pair_reserves(
+        &self,
+        pair_address: Address,
+        block_id: Option<BlockId>,
+    ) -> Result<(U256, U256)> {
+        let tx = TransactionRequest::default()
+            .with_to(pair_address.into())
+            .with_input(Bytes::from(IUniswapV2Pair::getReservesCall {}.abi_encode()));
+
+        let reserves = self
+            .rpc_provider
+            .call(&tx, block_id)
+            .await
+            .wrap_err("get_uniswap_v2_pair_reserves call failed")
+            .and_then(|result| {
+                println!("{:?}", pair_address);
+                println!("{:?}", result);
+                IUniswapV2Pair::getReservesCall::abi_decode_returns(
+                    result.as_ref(),
+                    cfg!(debug_assertions),
+                )
+                .wrap_err("failed to abi decode getReserves")
+            })?;
+
+        Ok((U256::from(reserves.reserve0), U256::from(reserves.reserve1)))
     }
 
     pub async fn get_uniswap_v2_pair_token_addresses(
