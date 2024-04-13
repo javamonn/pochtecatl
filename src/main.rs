@@ -54,7 +54,6 @@ async fn main() -> Result<()> {
         Arc::new(TradePositionController::new(Arc::clone(&rpc_provider)));
 
     let mut strategy = UniswapV2MomentumStrategy::new(
-        rpc_provider.signer_address(),
         price_indexer.time_price_bar_store(),
         trade_position_controller,
     );

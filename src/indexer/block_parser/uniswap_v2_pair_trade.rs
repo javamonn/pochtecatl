@@ -3,7 +3,7 @@ use super::{uniswap_v2_pair_swap_log, uniswap_v2_pair_sync_log};
 use crate::config;
 
 use alloy::{
-    primitives::{uint, Address, U256},
+    primitives::{Address, U256},
     rpc::types::eth::Log,
 };
 

@@ -19,6 +19,10 @@ impl ResolutionTimestamp {
         Self(timestamp - (timestamp % resolution.offset()))
     }
 
+    pub fn decrement(&self, resolution: &Resolution, amount: u64) -> Self {
+        Self(self.0 - (resolution.offset() * amount))
+    }
+
     pub fn previous(&self, resolution: &Resolution) -> Self {
         Self(self.0 - resolution.offset())
     }

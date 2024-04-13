@@ -1,79 +1,12 @@
-use crate::{
-    indexer::{IndexedUniswapV2Pair, UniswapV2PairTrade},
-    rpc_provider::RpcProvider,
-};
+use crate::rpc_provider::RpcProvider;
 
-use alloy::{
-    primitives::{Address, BlockNumber, U256},
-    rpc::types::eth::{TransactionReceipt, TransactionRequest},
-};
+use super::{ClosePositionRequest, OpenPositionRequest, TradePosition};
+
+use alloy::primitives::Address;
 
 use eyre::{eyre, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
-
-pub struct CommittedTrade {
-    block_number: BlockNumber,
-    gas_fee: U256,
-    trade: UniswapV2PairTrade,
-}
-
-pub struct CloseTradePosition {
-    close: CommittedTrade,
-    open: CommittedTrade,
-}
-
-pub enum TradePosition {
-    PendingOpen,
-    Open(CommittedTrade),
-    PendingClose,
-    Close {
-        open: CommittedTrade,
-        close: CommittedTrade,
-    },
-}
-
-impl TradePosition {
-    pub fn is_open(&self) -> bool {
-        matches!(self, Self::Open(_))
-    }
-}
-
-impl TryFrom<&TransactionReceipt> for CommittedTrade {
-    type Error = eyre::Error;
-
-    fn try_from(receipt: &TransactionReceipt) -> std::prelude::v1::Result<Self, Self::Error> {
-        let block_number = receipt
-            .block_number
-            .ok_or_else(|| eyre!("Block number not found"))?;
-        let gas_fee = U256::from(
-            receipt
-                .gas_used
-                .ok_or_else(|| eyre!("Gas used not found"))?,
-        ) * U256::from(receipt.effective_gas_price);
-        let trade = receipt
-            .as_ref()
-            .as_receipt()
-            .ok_or_else(|| eyre!("Transaction receipt is not a receipt"))
-            .and_then(|r| {
-                for (idx, log) in r.logs.iter().enumerate() {
-                    if let Some(uniswap_v2_pair_trade) =
-                        UniswapV2PairTrade::parse(log, &r.logs, idx)
-                    {
-                        return Ok(uniswap_v2_pair_trade);
-                    }
-                }
-
-                Err(eyre!("No Uniswap V2 pair trade found in receipt"))
-            })?;
-
-        Ok(Self {
-            block_number,
-            gas_fee,
-            trade,
-        })
-    }
-}
 
 pub struct TradePositionController {
     rpc_provider: Arc<RpcProvider>,
@@ -94,58 +27,59 @@ impl TradePositionController {
 
     pub async fn close_position(
         &self,
-        tx_request: TransactionRequest,
-        pair_address: Address,
+        mut ClosePositionRequest: ClosePositionRequest,
     ) -> Result<()> {
         unimplemented!()
     }
 
-    pub async fn uniswap_v2_position_is_valid(
-        &self,
-        pair: &IndexedUniswapV2Pair,
-        tx_request: &TransactionRequest,
-    ) -> Result<bool> {
-        unimplemented!()
+    fn remove_position(&self, pair_address: &Address) {
+        let mut trade_positions = self.trade_positions.write().unwrap();
+        trade_positions.remove(pair_address);
     }
 
-    pub async fn open_position(
-        &self,
-        tx_request: TransactionRequest,
-        pair_address: Address,
-    ) -> Result<()> {
-        // ensure that we do not already have a position for this pair and add the position to
-        // the store
+    pub async fn open_position(&self, open_position_request: OpenPositionRequest) -> Result<()> {
+        // ensure that we do not already have a position for this pair and add
+        // the position to the store
         {
             let mut trade_positions = self.trade_positions.write().unwrap();
-            if trade_positions.contains_key(&pair_address) {
-                return Err(eyre!("Position already exists for pair {}", pair_address));
+            if trade_positions.contains_key(open_position_request.pair_address()) {
+                return Err(eyre!(
+                    "Position already exists for pair {}",
+                    open_position_request.pair_address()
+                ));
             } else {
-                trade_positions.insert(pair_address, TradePosition::PendingOpen);
+                trade_positions.insert(
+                    *open_position_request.pair_address(),
+                    TradePosition::PendingOpen,
+                );
             }
         }
 
-        match self
-            .rpc_provider
-            .send_transaction(tx_request)
-            .await
-            .and_then(|receipt| (&receipt).try_into())
-        {
+        let sealed = open_position_request.into_sealed(self.rpc_provider.signer_address());
+
+        // Ensure the position is valid, otherwise remove the pending position from 
+        // the store
+        // FIXME: needs an rpc that supports tracing
+        // sealed.trace(&self.rpc_provider).await.inspect_err(|_| {
+        //    self.remove_position(sealed.open_position_request().pair_address());
+        // })?;
+
+        match sealed.send(&self.rpc_provider).await {
             Ok(committed_trade) => {
                 // Add the committed position to the store
                 {
                     let mut trade_positions = self.trade_positions.write().unwrap();
-                    trade_positions.insert(pair_address, TradePosition::Open(committed_trade));
+                    trade_positions.insert(
+                        *sealed.open_position_request().pair_address(),
+                        TradePosition::Open(committed_trade),
+                    );
                 }
 
                 Ok(())
             }
             Err(err) => {
                 // Remove the pending position from the store
-                {
-                    let mut trade_positions = self.trade_positions.write().unwrap();
-                    trade_positions.remove(&pair_address);
-                }
-
+                self.remove_position(sealed.open_position_request().pair_address());
                 Err(err)
             }
         }

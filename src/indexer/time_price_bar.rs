@@ -1,10 +1,9 @@
-use std::collections::BTreeMap;
+use super::{BlockPriceBar, Indicators, ResolutionTimestamp, TimePriceBars};
 
 use alloy::primitives::BlockNumber;
-use eyre::{eyre, Result};
-use fraction::GenericFraction;
 
-use super::BlockPriceBar;
+use fraction::{GenericFraction, ToPrimitive};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimePriceBarData {
@@ -29,6 +28,39 @@ impl TimePriceBarData {
             close,
         }
     }
+
+    pub fn reduce<'a>(
+        data: impl Iterator<Item = &'a TimePriceBarData>,
+    ) -> Option<TimePriceBarData> {
+        data.fold(None, |acc, price_bar| match acc {
+            None => Some(price_bar.clone()),
+            Some(mut acc) => {
+                if price_bar.high > acc.high {
+                    acc.high = price_bar.high
+                }
+                if price_bar.low < acc.low {
+                    acc.low = price_bar.low
+                }
+                acc.close = price_bar.close;
+
+                Some(acc)
+            }
+        })
+    }
+
+    pub fn is_negative(&self) -> bool {
+        self.close < self.open
+    }
+
+    pub fn close(&self) -> f64 {
+        self.close.to_f64().unwrap_or_else(|| {
+            log::warn!(
+                "Unable to derive close price for time price bar: {:?}",
+                self
+            );
+            f64::NAN
+        })
+    }
 }
 
 impl From<BlockPriceBar> for TimePriceBarData {
@@ -42,35 +74,50 @@ impl From<BlockPriceBar> for TimePriceBarData {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FinalizedTimePriceBar {
     pub data: TimePriceBarData,
+    pub indicators: Indicators,
+    pub close: f64,
     pub start_block_number: BlockNumber,
     pub end_block_number: BlockNumber,
 }
 
 impl FinalizedTimePriceBar {
     pub fn new(
-        data: TimePriceBarData,
         start_block_number: BlockNumber,
         end_block_number: BlockNumber,
+        data: TimePriceBarData,
+        indicators: Indicators,
     ) -> Self {
         Self {
             data,
+            indicators,
             start_block_number,
             end_block_number,
+            close: data.close(),
         }
     }
 
     pub fn data(&self) -> &TimePriceBarData {
         &self.data
     }
+
+    pub fn indicators(&self) -> &Indicators {
+        &self.indicators
+    }
+
+    pub fn close(&self) -> f64 {
+        self.close
+    }
 }
 
 // Holds individual BlockPriceBars until the underlying block range has been finalized
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct PendingTimePriceBar {
     pub data: Option<TimePriceBarData>,
+    pub indicators: Option<Indicators>,
+    pub close: Option<f64>,
     pub block_price_bars: BTreeMap<BlockNumber, TimePriceBarData>,
 }
 
@@ -79,6 +126,8 @@ impl PendingTimePriceBar {
         Self {
             block_price_bars: BTreeMap::new(),
             data: None,
+            close: None,
+            indicators: None,
         }
     }
 
@@ -90,27 +139,22 @@ impl PendingTimePriceBar {
         self.block_price_bars.last_key_value().map(|(k, _)| k)
     }
 
-    fn derive_data(&self) -> Option<TimePriceBarData> {
-        self.block_price_bars
-            .values()
-            .fold(None, |acc, price_bar| match acc {
-                None => Some(price_bar.clone()),
-                Some(mut acc) => {
-                    if price_bar.high > acc.high {
-                        acc.high = price_bar.high
-                    }
-                    if price_bar.low < acc.low {
-                        acc.low = price_bar.low
-                    }
-                    acc.close = price_bar.close;
-
-                    Some(acc)
-                }
-            })
-    }
-
     pub fn data(&self) -> &Option<TimePriceBarData> {
         &self.data
+    }
+
+    pub fn indicators(&self) -> &Option<Indicators> {
+        &self.indicators
+    }
+
+    pub fn close(&self) -> f64 {
+        self.close.unwrap_or_else(|| {
+            log::warn!(
+                "Unable to derive close price for time price bar: {:?}",
+                self
+            );
+            f64::NAN
+        })
     }
 
     pub fn prune_to_reorged_block_number(&mut self, reorged_block_number: BlockNumber) {
@@ -122,29 +166,23 @@ impl PendingTimePriceBar {
             }
         }
 
-        self.data = self.derive_data();
+        self.data = TimePriceBarData::reduce(self.block_price_bars.values());
+        self.close = self.data.as_ref().map(|data| data.close());
+        self.indicators = None;
     }
 
-    pub fn insert(&mut self, block_number: BlockNumber, data: TimePriceBarData) -> Result<()> {
-        match self.block_price_bars.last_key_value() {
-            None => {
-                self.block_price_bars.insert(block_number, data);
-                self.data = self.derive_data();
-                Ok(())
-            }
-            Some((last_block_number, _)) => {
-                if last_block_number + 1 == block_number {
-                    self.block_price_bars.insert(block_number, data);
-                    self.data = self.derive_data();
-                    Ok(())
-                } else {
-                    Err(eyre!("block_price_bars should be contiguous: last_block_number {}, inserting block number {}", last_block_number, block_number))
-                }
-            }
-        }
+    pub fn set_indicators(&mut self, indicators: Indicators) {
+        self.indicators = Some(indicators);
     }
 
-    pub fn into_finalized(&mut self) -> Option<FinalizedTimePriceBar> {
+    pub fn insert_block_price_bar(&mut self, block_number: BlockNumber, data: TimePriceBarData) {
+        self.block_price_bars.insert(block_number, data);
+        self.data = TimePriceBarData::reduce(self.block_price_bars.values());
+        self.indicators = None;
+        self.close = self.data.as_ref().map(|data| data.close());
+    }
+
+    pub fn as_finalized(&self) -> Option<FinalizedTimePriceBar> {
         let start_block_number = self
             .block_price_bars
             .first_key_value()
@@ -154,16 +192,18 @@ impl PendingTimePriceBar {
             .last_key_value()
             .map(|(end_block_number, _)| end_block_number.clone());
 
-        if self.data.is_none() {
-            self.data = self.derive_data();
-        }
-
-        match (self.data(), start_block_number, end_block_number) {
-            (Some(data), Some(start_block_number), Some(end_block_number)) => {
+        match (
+            start_block_number,
+            end_block_number,
+            self.data.as_ref(),
+            self.indicators.as_ref(),
+        ) {
+            (Some(start_block_number), Some(end_block_number), Some(data), Some(indicators)) => {
                 Some(FinalizedTimePriceBar::new(
+                    start_block_number,
+                    end_block_number,
                     data.clone(),
-                    start_block_number.clone(),
-                    end_block_number.clone(),
+                    indicators.clone(),
                 ))
             }
             _ => None,
@@ -171,36 +211,14 @@ impl PendingTimePriceBar {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum TimePriceBar {
     Pending(PendingTimePriceBar),
     Finalized(FinalizedTimePriceBar),
 }
 
 impl TimePriceBar {
-    pub fn insert(&mut self, block_number: BlockNumber, data: TimePriceBarData) -> Result<()> {
-        match self {
-            TimePriceBar::Pending(pending_time_price_bar) => {
-                pending_time_price_bar.insert(block_number, data)
-            }
-            TimePriceBar::Finalized(_) => Err(eyre!(
-                "Attempted to insert price bar data into finalized price bar for block number {}",
-                block_number
-            )),
-        }
-    }
-
-    pub fn into_finalized(&mut self) -> Result<Self> {
-        match self {
-            TimePriceBar::Pending(price_bar) => price_bar
-                .into_finalized()
-                .ok_or_else(|| eyre!("Unable to finalize price bar"))
-                .map(|price_bar| TimePriceBar::Finalized(price_bar)),
-            TimePriceBar::Finalized(_) => Err(eyre!("Price bar already finalized")),
-        }
-    }
-
-    pub fn get_data(&self) -> Option<&TimePriceBarData> {
+    pub fn data(&self) -> Option<&TimePriceBarData> {
         match self {
             TimePriceBar::Pending(pending_time_price_bar) => pending_time_price_bar.data().as_ref(),
             TimePriceBar::Finalized(finalized_time_price_bar) => {
@@ -208,11 +226,32 @@ impl TimePriceBar {
             }
         }
     }
+
+    pub fn close(&self) -> f64 {
+        match self {
+            TimePriceBar::Pending(pending_time_price_bar) => pending_time_price_bar.close(),
+            TimePriceBar::Finalized(finalized_time_price_bar) => finalized_time_price_bar.close(),
+        }
+    }
+
+    pub fn indicators(&self) -> Option<&Indicators> {
+        match self {
+            TimePriceBar::Pending(pending_time_price_bar) => {
+                pending_time_price_bar.indicators().as_ref()
+            }
+            TimePriceBar::Finalized(finalized_time_price_bar) => {
+                Some(finalized_time_price_bar.indicators())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PendingTimePriceBar, TimePriceBarData};
+    use crate::{
+        config,
+        indexer::{PendingTimePriceBar, TimePriceBarData, Indicators},
+    };
 
     use eyre::{Ok, Result};
     use fraction::GenericFraction;
@@ -220,7 +259,7 @@ mod tests {
     #[test]
     fn test_pending_time_price_bar_data() -> Result<()> {
         let mut time_price_bar = PendingTimePriceBar::new();
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             1,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -228,7 +267,7 @@ mod tests {
                 low: GenericFraction::new(1_u128, 1_u128),
                 close: GenericFraction::new(1_u128, 1_u128),
             },
-        )?;
+        );
 
         assert_eq!(
             time_price_bar.data().expect("Expected data but found None"),
@@ -240,7 +279,7 @@ mod tests {
             }
         );
 
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             2,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -248,7 +287,7 @@ mod tests {
                 low: GenericFraction::new(1_u128, 2_u128),
                 close: GenericFraction::new(1_u128, 2_u128),
             },
-        )?;
+        );
 
         assert_eq!(
             time_price_bar.data().expect("Expected data but found None"),
@@ -266,7 +305,7 @@ mod tests {
     #[test]
     fn test_block_number() -> Result<()> {
         let mut time_price_bar = PendingTimePriceBar::new();
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             1,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -274,9 +313,9 @@ mod tests {
                 low: GenericFraction::new(1_u128, 1_u128),
                 close: GenericFraction::new(1_u128, 1_u128),
             },
-        )?;
+        );
 
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             2,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -284,7 +323,7 @@ mod tests {
                 low: GenericFraction::new(1_u128, 2_u128),
                 close: GenericFraction::new(1_u128, 2_u128),
             },
-        )?;
+        );
 
         assert_eq!(
             time_price_bar
@@ -305,7 +344,7 @@ mod tests {
     #[test]
     fn test_prune_to_reorged_block_number() -> Result<()> {
         let mut time_price_bar = PendingTimePriceBar::new();
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             1,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -313,8 +352,8 @@ mod tests {
                 low: GenericFraction::new(1_u128, 1_u128),
                 close: GenericFraction::new(1_u128, 1_u128),
             },
-        )?;
-        time_price_bar.insert(
+        );
+        time_price_bar.insert_block_price_bar(
             2,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -322,8 +361,8 @@ mod tests {
                 low: GenericFraction::new(1_u128, 2_u128),
                 close: GenericFraction::new(1_u128, 2_u128),
             },
-        )?;
-        time_price_bar.insert(
+        );
+        time_price_bar.insert_block_price_bar(
             3,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 2_u128),
@@ -331,7 +370,7 @@ mod tests {
                 low: GenericFraction::new(1_u128, 3_u128),
                 close: GenericFraction::new(1_u128, 3_u128),
             },
-        )?;
+        );
 
         assert_eq!(
             time_price_bar.data().expect("Expected data but found None"),
@@ -373,7 +412,7 @@ mod tests {
     #[test]
     fn test_into_finalized() -> Result<()> {
         let mut time_price_bar = PendingTimePriceBar::new();
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             1,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -381,9 +420,9 @@ mod tests {
                 low: GenericFraction::new(1_u128, 1_u128),
                 close: GenericFraction::new(1_u128, 1_u128),
             },
-        )?;
+        );
 
-        time_price_bar.insert(
+        time_price_bar.insert_block_price_bar(
             2,
             TimePriceBarData {
                 open: GenericFraction::new(1_u128, 1_u128),
@@ -391,10 +430,12 @@ mod tests {
                 low: GenericFraction::new(1_u128, 2_u128),
                 close: GenericFraction::new(1_u128, 2_u128),
             },
-        )?;
+        );
+
+        time_price_bar.set_indicators(Indicators::new((1.0, 1.0, 1.0), 1.0));
 
         let finalized = time_price_bar
-            .into_finalized()
+            .as_finalized()
             .expect("Expected into_finalized,  but found None");
 
         assert_eq!(finalized.start_block_number, 1);
