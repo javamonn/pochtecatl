@@ -1,4 +1,4 @@
-use super::UniswapV2PairTrade;
+use super::{ParseableTrade, UniswapV2PairTrade};
 
 use crate::{config, rpc_provider::RpcProvider};
 
@@ -51,7 +51,8 @@ impl Block {
         let mut uniswap_v2_pairs = Vec::new();
         for (idx, log) in logs.iter().enumerate() {
             // Try to parse a uniswap v2 trade
-            if let Some(uniswap_v2_pair_trade) = UniswapV2PairTrade::parse(log, logs, idx) {
+            if let Some(uniswap_v2_pair_trade) = UniswapV2PairTrade::parse_from_log(log, logs, idx)
+            {
                 uniswap_v2_pairs.push((log.address(), uniswap_v2_pair_trade));
             }
         }
@@ -81,10 +82,7 @@ impl Block {
                             let uniswap_v2_pair = block
                                 .uniswap_v2_pairs
                                 .entry(pair_address)
-                                .or_insert_with(|| UniswapV2Pair {
-                                    token_address,
-                                    trades: Vec::new(),
-                                });
+                                .or_insert_with(|| UniswapV2Pair::new(token_address, Vec::new()));
                             uniswap_v2_pair.trades.push(trade);
                         }
                     }

@@ -1,4 +1,4 @@
-use super::{BlockPriceBar, Indicators, ResolutionTimestamp, TimePriceBars};
+use super::{BlockPriceBar, Indicators};
 
 use alloy::primitives::BlockNumber;
 
@@ -248,10 +248,7 @@ impl TimePriceBar {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        config,
-        indexer::{PendingTimePriceBar, TimePriceBarData, Indicators},
-    };
+    use crate::indexer::{Indicators, PendingTimePriceBar, TimePriceBarData};
 
     use eyre::{Ok, Result};
     use fraction::GenericFraction;
@@ -432,7 +429,7 @@ mod tests {
             },
         );
 
-        time_price_bar.set_indicators(Indicators::new((1.0, 1.0, 1.0), 1.0));
+        time_price_bar.set_indicators(Indicators::new(None, (1.0, 1.0)));
 
         let finalized = time_price_bar
             .as_finalized()
@@ -449,6 +446,8 @@ mod tests {
                 close: GenericFraction::new(1_u128, 2_u128)
             }
         );
+        assert_eq!(finalized.indicators.ema, (1.0, 1.0));
+        assert_eq!(finalized.indicators.bollinger_bands, None);
 
         Ok(())
     }

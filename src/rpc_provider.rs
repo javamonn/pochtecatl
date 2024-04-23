@@ -2,10 +2,10 @@ use crate::{abi::IUniswapV2Pair, config};
 
 use alloy::{
     network::{Ethereum, EthereumSigner, TransactionBuilder},
-    primitives::{Address, BlockNumber, Bytes, U256},
+    primitives::{Address, BlockNumber, Bytes, TxHash, U256},
     providers::{
         layers::{GasEstimatorProvider, ManagedNonceProvider, SignerProvider},
-        Provider, ProviderBuilder, RootProvider,
+        PendingTransactionBuilder, Provider, ProviderBuilder, RootProvider,
     },
     pubsub::PubSubFrontend,
     rpc::{
@@ -128,13 +128,9 @@ impl RpcProvider {
     pub async fn send_transaction(
         &self,
         tx_request: TransactionRequest,
-    ) -> Result<TransactionReceipt> {
+    ) -> Result<PendingTransactionBuilder<'_, PubSubFrontend, Ethereum>> {
         self.rpc_provider
             .send_transaction(tx_request)
-            .await?
-            .with_timeout(Some(Duration::from_secs(10)))
-            .with_required_confirmations(1)
-            .get_receipt()
             .await
             .wrap_err("send_transaction failed")
     }
@@ -144,8 +140,12 @@ impl RpcProvider {
     }
 
     // custom api
-    pub fn signer_address(&self) -> Address {
-        self.signer_address
+    pub fn signer_address(&self) -> &Address {
+        &self.signer_address
+    }
+
+    pub fn inner(&self) -> &AlloyRpcProvider {
+        &self.rpc_provider
     }
 
     pub async fn get_finalized_block_header(&self) -> Result<Header> {
@@ -277,7 +277,6 @@ impl RpcProvider {
         Ok(token_addresses)
     }
 
-    #[cfg(test)]
     pub async fn get_block_header(&self, block_number: BlockNumber) -> Result<Option<Header>> {
         self.rpc_provider
             .get_block_by_number(block_number.into(), false)
