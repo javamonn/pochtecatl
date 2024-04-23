@@ -53,10 +53,10 @@ impl IndexedBlockMessage {
 
     pub fn from_block_with_ack(block: &Block) -> (Self, oneshot::Receiver<()>) {
         let (ack_sender, ack_receiver) = oneshot::channel();
-        let inst = Self {
-            block_number: block.block_number,
-            block_timestamp: block.block_timestamp,
-            uniswap_v2_pairs: block
+        let inst = Self::new(
+            block.block_number,
+            block.block_timestamp,
+            block
                 .uniswap_v2_pairs
                 .iter()
                 .filter_map(|(pair_address, pair)| match pair.trades.last() {
@@ -78,8 +78,8 @@ impl IndexedBlockMessage {
                     None => None,
                 })
                 .collect(),
-            ack: Some(ack_sender),
-        };
+            Some(ack_sender),
+        );
 
         (inst, ack_receiver)
     }

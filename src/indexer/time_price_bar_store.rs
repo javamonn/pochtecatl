@@ -382,7 +382,7 @@ mod tests {
                             block.block_timestamp,
                             &Resolution::FiveMinutes
                         )
-                    )?
+                    )
                     .len(),
                 1
             );

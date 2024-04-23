@@ -12,7 +12,7 @@ impl Resolution {
 }
 
 #[derive(PartialOrd, Ord, Eq, PartialEq, Clone, Copy, Debug)]
-pub struct ResolutionTimestamp(u64);
+pub struct ResolutionTimestamp(pub u64);
 
 impl ResolutionTimestamp {
     pub fn from_timestamp(timestamp: u64, resolution: &Resolution) -> Self {

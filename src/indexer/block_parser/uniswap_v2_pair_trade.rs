@@ -1,4 +1,4 @@
-use super::{uniswap_v2_pair_swap_log, uniswap_v2_pair_sync_log};
+use super::{uniswap_v2_pair_swap_log, uniswap_v2_pair_sync_log, ParseableTrade};
 
 use crate::config;
 
@@ -41,39 +41,6 @@ impl UniswapV2PairTrade {
         }
     }
 
-    pub fn parse(log: &Log, logs: &Vec<Log>, relative_log_idx: usize) -> Option<Self> {
-        uniswap_v2_pair_swap_log::parse(&log).and_then(|parsed_swap| {
-            logs.get(relative_log_idx - 1)
-                .and_then(|prev_log| {
-                    // Ensure prev log in the arr is the previous log index in the
-                    // same block for the same pair
-                    if prev_log.block_hash == log.block_hash
-                        && prev_log.address() == log.address()
-                        && prev_log.log_index.is_some_and(|prev_log_index| {
-                            log.log_index.is_some_and(|log_index| {
-                                prev_log_index + 1 == log_index
-                            })
-                        })
-                    {
-                        uniswap_v2_pair_sync_log::parse(&prev_log)
-                    } else {
-                        None
-                    }
-                })
-                .map(|parsed_sync| {
-                    UniswapV2PairTrade::new(
-                        parsed_swap.amount0In,
-                        parsed_swap.amount1In,
-                        parsed_swap.amount0Out,
-                        parsed_swap.amount1Out,
-                        U256::from(parsed_sync.reserve0),
-                        U256::from(parsed_sync.reserve1),
-                        parsed_swap.to,
-                    )
-                })
-        })
-    }
-
     pub fn get_price_before(&self, token_address: &Address) -> GenericFraction<u128> {
         let reserve0_before = self.reserve0 - self.amount0_in + self.amount0_out;
         let reserve1_before = self.reserve1 - self.amount1_in + self.amount1_out;
@@ -95,5 +62,43 @@ impl UniswapV2PairTrade {
             // token0 is weth, token1 is token
             GenericFraction::new(self.reserve0.to::<u128>(), self.reserve1.to::<u128>())
         }
+    }
+}
+
+impl ParseableTrade for UniswapV2PairTrade {
+    fn parse_from_log(
+        log: &Log,
+        logs: &Vec<Log>,
+        relative_log_idx: usize,
+    ) -> Option<UniswapV2PairTrade> {
+        uniswap_v2_pair_swap_log::parse(&log).and_then(|parsed_swap| {
+            logs.get(relative_log_idx - 1)
+                .and_then(|prev_log| {
+                    // Ensure prev log in the arr is the previous log index in the
+                    // same block for the same pair
+                    if prev_log.block_hash == log.block_hash
+                        && prev_log.address() == log.address()
+                        && prev_log.log_index.is_some_and(|prev_log_index| {
+                            log.log_index
+                                .is_some_and(|log_index| prev_log_index + 1 == log_index)
+                        })
+                    {
+                        uniswap_v2_pair_sync_log::parse(&prev_log)
+                    } else {
+                        None
+                    }
+                })
+                .map(|parsed_sync| {
+                    UniswapV2PairTrade::new(
+                        parsed_swap.amount0In,
+                        parsed_swap.amount1In,
+                        parsed_swap.amount0Out,
+                        parsed_swap.amount1Out,
+                        U256::from(parsed_sync.reserve0),
+                        U256::from(parsed_sync.reserve1),
+                        parsed_swap.to,
+                    )
+                })
+        })
     }
 }

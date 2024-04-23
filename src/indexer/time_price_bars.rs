@@ -19,9 +19,6 @@ pub struct TimePriceBars {
 
     // The last resolution timestamp with inserted (i.e. non-padded) data
     last_inserted_timestamp_with_data: Option<ResolutionTimestamp>,
-
-    // The last finalized timestamp
-    last_finalized_timestamp: Option<ResolutionTimestamp>,
 }
 
 impl TimePriceBars {
@@ -31,7 +28,6 @@ impl TimePriceBars {
             retention_count,
             resolution,
             last_inserted_timestamp_with_data: None,
-            last_finalized_timestamp: None,
         }
     }
 
@@ -43,14 +39,8 @@ impl TimePriceBars {
         &self.resolution
     }
 
-    pub fn last_finalized_timestamp(&self) -> Option<&ResolutionTimestamp> {
-        self.last_finalized_timestamp.as_ref()
-    }
-
-    pub fn time_price_bar(&self, timestamp: &ResolutionTimestamp) -> Option<&TimePriceBarData> {
-        self.data
-            .get(timestamp)
-            .and_then(|time_price_bar| time_price_bar.data())
+    pub fn time_price_bar(&self, timestamp: &ResolutionTimestamp) -> Option<&TimePriceBar> {
+        self.data.get(timestamp)
     }
 
     #[cfg(test)]
@@ -58,57 +48,13 @@ impl TimePriceBars {
         &self,
         start_resolution_timestamp: &ResolutionTimestamp,
         end_resolution_timestamp: &ResolutionTimestamp,
-    ) -> Result<Vec<(&ResolutionTimestamp, &TimePriceBarData)>> {
-        let mut output = Vec::new();
-        for (timestamp, time_price_bar) in self
-            .data
+    ) -> Vec<(&ResolutionTimestamp, &TimePriceBarData)> {
+        self.data
             .range(start_resolution_timestamp..=end_resolution_timestamp)
-        {
-            match time_price_bar.data() {
-                Some(data) => {
-                    output.push((timestamp, data));
-                }
-                None => {
-                    return Err(eyre!(
-                        "Expected TimePriceBar to have data, but found none at {:?}, ",
-                        timestamp
-                    ))
-                }
-            }
-        }
-
-        Ok(output)
-    }
-
-    pub fn indicators_range(
-        &self,
-        start_resolution_timestamp: &ResolutionTimestamp,
-        end_resolution_timestamp: &ResolutionTimestamp,
-    ) -> Vec<&Indicators> {
-        /*
-        let mut output = Vec::new();
-
-        for (timestamp, time_price_bar) in self
-            .data
-            .range(start_resolution_timestamp..=end_resolution_timestamp)
-        {
-            match time_price_bar {
-                TimePriceBar::Finalized(finalized_time_price_bar) => {
-                    output.push(BoxedIndicators::Ref(finalized_time_price_bar.indicators()));
-                }
-                TimePriceBar::Pending(pending_time_price_bar) => {
-                    output.push(BoxedIndicators::Owned(Indicators::new(
-                        pending_time_price_bar,
-                        timestamp,
-                        &self,
-                    )));
-                }
-            }
-        }
-
-        output
-        */
-        unimplemented!()
+            .filter_map(|(timestamp, time_price_bar)| {
+                time_price_bar.data().map(|data| (timestamp, data))
+            })
+            .collect()
     }
 
     fn prune_to_retention_count(&mut self) {
@@ -299,8 +245,6 @@ impl TimePriceBars {
             self.data.insert(timestamp, finalized_time_price_bar);
         }
 
-        self.last_finalized_timestamp = Some(end_resolution_timestamp.clone());
-
         Ok(())
     }
 
@@ -364,7 +308,10 @@ impl TimePriceBars {
 
 #[cfg(test)]
 mod tests {
-    use crate::indexer::{Resolution, ResolutionTimestamp, TimePriceBarData};
+    use crate::indexer::{
+        time_price_bar_indicators::INDICATOR_BB_PERIOD, Resolution, ResolutionTimestamp,
+        TimePriceBarData,
+    };
 
     use super::TimePriceBars;
 
@@ -386,7 +333,7 @@ mod tests {
 
         // test initial insert
         time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
-        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
+        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp);
         assert_eq!(data.len(), 1);
         assert_eq!(data[0], (&mock_timestamp, &mock_data));
 
@@ -396,7 +343,7 @@ mod tests {
         let last_ts = next_ts.next(&Resolution::FiveMinutes);
         time_price_bars.insert_data(last_ts, 3_u64, mock_data.clone())?;
 
-        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &last_ts)?;
+        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &last_ts);
         assert_eq!(data.len(), 2);
         assert_eq!(data[0], (&next_ts, &mock_data));
 
@@ -420,7 +367,7 @@ mod tests {
             time_price_bars.insert_data(mock_timestamp, 2_u64, mock_data.clone())?;
             time_price_bars.insert_data(mock_timestamp, 3_u64, mock_data.clone())?;
             time_price_bars.prune_to_reorged_block_number(2_u64)?;
-            let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
+            let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp);
             assert_eq!(data.len(), 1);
         }
 
@@ -439,7 +386,7 @@ mod tests {
                 mock_data.clone(),
             )?;
             time_price_bars.prune_to_reorged_block_number(2_u64)?;
-            let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
+            let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp);
             assert_eq!(data.len(), 1);
         }
 
@@ -466,7 +413,7 @@ mod tests {
             let data = time_price_bars.time_price_bar_range(
                 &mock_timestamp,
                 &mock_timestamp.next(&Resolution::FiveMinutes),
-            )?;
+            );
             assert_eq!(data.len(), 2);
         }
 
@@ -480,7 +427,7 @@ mod tests {
             let data = time_price_bars.time_price_bar_range(
                 &mock_timestamp,
                 &mock_timestamp.next(&Resolution::FiveMinutes),
-            )?;
+            );
             assert_eq!(data.len(), 2);
         }
 
@@ -489,7 +436,6 @@ mod tests {
 
     #[test]
     pub fn test_finalize_range() -> Result<()> {
-        // structured_logger::Builder::with_level("warn").init();
         let mock_timestamp = ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
         let mock_data = TimePriceBarData::new(
             GenericFraction::new(1_u128, 1_u128),
@@ -500,8 +446,44 @@ mod tests {
         let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
         time_price_bars.insert_data(mock_timestamp, 1_u64, mock_data.clone())?;
         time_price_bars.finalize_range(&mock_timestamp, &mock_timestamp)?;
-        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp)?;
+        let data = time_price_bars.time_price_bar_range(&mock_timestamp, &mock_timestamp);
         assert_eq!(data.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn test_update_indicators() -> Result<()> {
+        let mut time_price_bars = TimePriceBars::new(100, Resolution::FiveMinutes);
+
+        for i in 1..=INDICATOR_BB_PERIOD {
+            time_price_bars.insert_data(
+                ResolutionTimestamp::from_timestamp(
+                    i * Resolution::FiveMinutes.offset() + 10000,
+                    &Resolution::FiveMinutes,
+                ),
+                i,
+                TimePriceBarData::new(
+                    GenericFraction::new(1_u128, 1_u128),
+                    GenericFraction::new(1_u128, 1_u128),
+                    GenericFraction::new(1_u128, 1_u128),
+                    GenericFraction::new(i as u128, 1_u128),
+                ),
+            )?;
+        }
+
+        // The last inserted data should contain a set indicator
+        let last_inserted_timestamp = ResolutionTimestamp::from_timestamp(
+            INDICATOR_BB_PERIOD * Resolution::FiveMinutes.offset() + 10000,
+            &Resolution::FiveMinutes,
+        );
+
+        assert!(time_price_bars
+            .data
+            .get(&last_inserted_timestamp)
+            .expect(&format!("Expected data for {:?}", last_inserted_timestamp))
+            .indicators()
+            .is_some());
 
         Ok(())
     }
