@@ -1,6 +1,7 @@
 use super::{StrategyExecutor, UniswapV2MomentumStrategy, UniswapV2Strategy};
 
 use crate::{
+    config,
     indexer::{IndexedBlockMessage, ResolutionTimestamp, TimePriceBarStore, UniswapV2PairTrade},
     trade_controller::{
         Trade, TradeController, UniswapV2CloseTradeRequest, UniswapV2OpenTradeRequest,
@@ -90,7 +91,7 @@ async fn handle_indexed_block_message<S: UniswapV2Strategy>(
 
     // Execute core strategy logic
     {
-        let pair_trades = trade_controller.trade_positions().read().unwrap();
+        let trades = trade_controller.trades().0.read().unwrap();
         let time_price_bars = time_price_bar_store.time_price_bars().read().unwrap();
 
         let resolution = time_price_bar_store.resolution();
@@ -98,9 +99,10 @@ async fn handle_indexed_block_message<S: UniswapV2Strategy>(
             ResolutionTimestamp::from_timestamp(indexed_block_message.block_timestamp, &resolution);
 
         for uniswap_v2_pair in indexed_block_message.uniswap_v2_pairs.into_iter() {
-            let trade = pair_trades.get(&uniswap_v2_pair.pair_address);
-
-            match trade {
+            match trades
+                .get(&uniswap_v2_pair.pair_address)
+                .and_then(|address_trades| address_trades.active().as_ref())
+            {
                 None => {
                     match strategy.should_open_position(
                         &uniswap_v2_pair,
@@ -145,7 +147,25 @@ async fn handle_indexed_block_message<S: UniswapV2Strategy>(
                     &time_price_bars,
                 ) {
                     Ok(()) => {
-                        let close_position_request = UniswapV2CloseTradeRequest::new();
+                        let open_token_amount =
+                            if uniswap_v2_pair.token_address < *config::WETH_ADDRESS {
+                                // token0 is token, token1 is weth
+                                open_trade_metadata.parsed_trade().amount0_out
+                            } else {
+                                // token1 is token, token0 is weth
+                                open_trade_metadata.parsed_trade().amount1_out
+                            };
+
+                        let close_position_request = UniswapV2CloseTradeRequest::new(
+                            uniswap_v2_pair.pair_address,
+                            uniswap_v2_pair.token_address,
+                            uniswap_v2_pair.weth_reserve,
+                            uniswap_v2_pair.token_reserve,
+                            open_token_amount,
+                            indexed_block_message.block_number,
+                            indexed_block_message.block_timestamp,
+                        );
+
                         let trade_controller = Arc::clone(&trade_controller);
 
                         pending_tx_tasks.spawn(async move {

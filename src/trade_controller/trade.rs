@@ -7,6 +7,7 @@ use alloy::{
 
 use eyre::{eyre, Result};
 
+#[derive(Clone, Copy)]
 pub struct TradeMetadata<T: ParseableTrade> {
     block_number: BlockNumber,
     block_timestamp: u64,
@@ -14,7 +15,21 @@ pub struct TradeMetadata<T: ParseableTrade> {
     parsed_trade: T,
 }
 
-impl<T: ParseableTrade> TradeMetadata<T> {
+impl<T: ParseableTrade + Clone + Copy> TradeMetadata<T> {
+    pub fn new(
+        block_number: BlockNumber,
+        block_timestamp: u64,
+        gas_fee: U256,
+        parsed_trade: T,
+    ) -> Self {
+        Self {
+            block_number,
+            block_timestamp,
+            gas_fee,
+            parsed_trade,
+        }
+    }
+
     pub async fn from_receipt(
         receipt: &TransactionReceipt,
         rpc_provider: &RpcProvider,
@@ -59,11 +74,27 @@ impl<T: ParseableTrade> TradeMetadata<T> {
     pub fn block_timestamp(&self) -> &u64 {
         &self.block_timestamp
     }
+
+    pub fn parsed_trade(&self) -> &T {
+        &self.parsed_trade
+    }
 }
 
+#[derive(Clone, Copy)]
 pub enum Trade<T: ParseableTrade> {
     PendingOpen,
     Open(TradeMetadata<T>),
     PendingClose,
     Closed(TradeMetadata<T>, TradeMetadata<T>),
+}
+
+impl<T: ParseableTrade> Trade<T> {
+    pub fn label (&self) -> &str {
+        match self {
+            Trade::PendingOpen => "Pending Open",
+            Trade::Open(_) => "Open",
+            Trade::PendingClose => "Pending Close",
+            Trade::Closed(_, _) => "Closed",
+        }
+    }
 }

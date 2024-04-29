@@ -1,6 +1,8 @@
-use super::TradeRequest;
+use super::{backtest_util::estimate_gas_fee, TradeMetadata, TradeRequest};
 
-use crate::{abi::uniswap_v2_router, rpc_provider::RpcProvider};
+use crate::{
+    abi::uniswap_v2_router, config, indexer::UniswapV2PairTrade, rpc_provider::RpcProvider,
+};
 
 use alloy::{
     primitives::{uint, Address, BlockNumber, U256},
@@ -12,7 +14,6 @@ use eyre::Result;
 const BP_FACTOR: U256 = uint!(10000_U256);
 const MAX_TRADE_SIZE_PRICE_IMPACT_BP: U256 = uint!(50_U256);
 const MAX_TRADE_SIZE_WEI: U256 = uint!(1000000000000000000_U256);
-
 const DEADLINE_BUFFER: u64 = 30;
 
 pub struct UniswapV2OpenTradeRequest {
@@ -65,7 +66,7 @@ impl UniswapV2OpenTradeRequest {
     }
 }
 
-impl TradeRequest for UniswapV2OpenTradeRequest {
+impl TradeRequest<UniswapV2PairTrade> for UniswapV2OpenTradeRequest {
     fn address(&self) -> &Address {
         &self.pair_address
     }
@@ -79,6 +80,46 @@ impl TradeRequest for UniswapV2OpenTradeRequest {
             self.token_address,
             U256::from(self.block_timestamp + 30),
         )
+    }
+
+    async fn as_backtest_trade_metadata(
+        &self,
+        rpc_provider: &RpcProvider,
+    ) -> Result<TradeMetadata<UniswapV2PairTrade>> {
+        let (eth_amount_in, output_token_amount_min) = self.swap_params();
+        let trade = if self.token_address < *config::WETH_ADDRESS {
+            // token0 is token, token1 is weth
+            UniswapV2PairTrade::new(
+                U256::ZERO,
+                eth_amount_in,
+                output_token_amount_min,
+                U256::ZERO,
+                self.token_reserve - output_token_amount_min,
+                self.weth_reserve + eth_amount_in,
+                rpc_provider.signer_address().clone(),
+            )
+        } else {
+            // token0 is weth, token1 is token
+            UniswapV2PairTrade::new(
+                eth_amount_in,
+                U256::ZERO,
+                U256::ZERO,
+                output_token_amount_min,
+                self.weth_reserve + eth_amount_in,
+                self.token_reserve - output_token_amount_min,
+                rpc_provider.signer_address().clone(),
+            )
+        };
+
+        let gas_fee =
+            estimate_gas_fee(&rpc_provider, uint!(130000_U256), self.block_number + 1).await?;
+
+        Ok(TradeMetadata::new(
+            self.block_number + 1,
+            self.block_timestamp + *config::AVERAGE_BLOCK_TIME_SECONDS,
+            gas_fee,
+            trade,
+        ))
     }
 
     async fn trace(&self, _rpc_provider: &RpcProvider) -> Result<()> {

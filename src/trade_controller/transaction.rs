@@ -5,39 +5,28 @@ use crate::{indexer::ParseableTrade, rpc_provider::RpcProvider};
 use alloy::{
     primitives::TxHash,
     providers::{PendingTransactionBuilder, Provider},
-    rpc::types::eth::TransactionRequest as InnerTransactionRequest,
+    rpc::types::eth::TransactionRequest,
 };
 
 use eyre::{Result, WrapErr};
 use std::{fmt::Display, time::Duration};
 
-pub struct TransactionRequest(InnerTransactionRequest);
-
 #[derive(Debug)]
-pub struct PendingTransaction(TxHash);
-
-impl Display for PendingTransaction {
+pub struct Transaction(TxHash);
+impl Display for Transaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PendingTransaction({})", self.0)
+        write!(f, "Transaction({})", self.0)
     }
 }
-
-impl From<InnerTransactionRequest> for TransactionRequest {
-    fn from(tx_request: InnerTransactionRequest) -> Self {
-        Self(tx_request)
-    }
-}
-impl TransactionRequest {
-    pub async fn into_pending(self, rpc_provider: &RpcProvider) -> Result<PendingTransaction> {
+impl Transaction {
+    pub async fn send(tx_request: TransactionRequest, rpc_provider: &RpcProvider) -> Result<Self> {
         rpc_provider
-            .send_transaction(self.0)
+            .send_transaction(tx_request)
             .await
-            .map(|pending| PendingTransaction(pending.tx_hash().clone()))
+            .map(|pending| Self(pending.tx_hash().clone()))
             .wrap_err("Failed to send_transaction")
     }
-}
 
-impl PendingTransaction {
     pub async fn into_trade_metadata<T: ParseableTrade>(
         self,
         rpc_provider: &RpcProvider,
@@ -63,3 +52,4 @@ impl PendingTransaction {
             })
     }
 }
+
