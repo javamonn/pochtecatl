@@ -12,7 +12,7 @@ use alloy::{
         client::WsConnect,
         types::{
             eth::{
-                BlockId, BlockNumberOrTag, Filter, Header, Log, TransactionReceipt,
+                Block, BlockId, BlockNumberOrTag, Filter, Header, Log, TransactionReceipt,
                 TransactionRequest,
             },
             trace::parity::{TraceResults, TraceType},
@@ -30,7 +30,7 @@ use std::{
     num::NonZeroUsize,
     ops::Deref,
     sync::{Arc, RwLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
 
@@ -57,6 +57,8 @@ impl<V> TTLCache<V> {
     }
 }
 
+const BLOCK_CACHE_SIZE: usize = 100;
+
 type AlloyRpcProvider = SignerProvider<
     PubSubFrontend,
     GasEstimatorProvider<
@@ -73,6 +75,8 @@ pub struct RpcProvider {
 
     // caches
     uniswap_v2_pair_token_addresses_cache: RwLock<LruCache<Address, (Address, Address)>>,
+    block_cache: Arc<RwLock<BTreeMap<BlockNumber, Block>>>,
+
     finalized_block_header_cache: RwLock<Option<TTLCache<Header>>>,
 }
 
@@ -92,6 +96,38 @@ async fn make_provider(url: &String) -> Result<(AlloyRpcProvider, Address)> {
     Ok((provider, signer_address))
 }
 
+async fn get_block_with_cache(
+    block_number: BlockNumber,
+    block_cache: &RwLock<BTreeMap<BlockNumber, Block>>,
+    rpc_provider: &AlloyRpcProvider,
+) -> Result<Option<Block>> {
+    // Return value from cache if it exists
+    {
+        let read_cache = block_cache.read().unwrap();
+        if let Some(block) = read_cache.get(&block_number) {
+            return Ok(Some(block.clone()));
+        }
+    }
+
+    // Otherwise fetch from rpc and update cache once complete
+    let block = rpc_provider
+        .get_block_by_number(block_number.into(), false)
+        .await
+        .wrap_err_with(|| format!("get_block_by_number {} failed", block_number))?;
+
+    if let Some(block) = block.clone() {
+        let mut write_cache = block_cache.write().unwrap();
+        write_cache.insert(block_number, block.clone());
+
+        // Trim cache if required
+        while write_cache.len() > BLOCK_CACHE_SIZE + (BLOCK_CACHE_SIZE / 2) {
+            write_cache.pop_first();
+        }
+    }
+
+    Ok(block)
+}
+
 impl RpcProvider {
     pub async fn new(url: &String) -> Result<Self> {
         Self::new_with_cache(url, None).await
@@ -109,6 +145,7 @@ impl RpcProvider {
             uniswap_v2_pair_token_addresses_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).unwrap(),
             )),
+            block_cache: Arc::new(RwLock::new(BTreeMap::new())),
             finalized_block_header_cache: RwLock::new(finalized_block_header_cache),
         })
     }
@@ -137,6 +174,16 @@ impl RpcProvider {
 
     pub async fn get_logs(&self, filter: &Filter) -> TransportResult<Vec<Log>> {
         self.rpc_provider.get_logs(filter).await
+    }
+
+    pub async fn get_transaction_receipt(
+        &self,
+        hash: TxHash,
+    ) -> Result<Option<TransactionReceipt>> {
+        self.rpc_provider
+            .get_transaction_receipt(hash)
+            .await
+            .wrap_err(format!("get_transaction_receipt {} failed", hash))
     }
 
     // custom api
@@ -277,11 +324,13 @@ impl RpcProvider {
         Ok(token_addresses)
     }
 
+    pub async fn get_block(&self, block_number: BlockNumber) -> Result<Option<Block>> {
+        get_block_with_cache(block_number, &self.block_cache, &self.rpc_provider).await
+    }
+
     pub async fn get_block_header(&self, block_number: BlockNumber) -> Result<Option<Header>> {
-        self.rpc_provider
-            .get_block_by_number(block_number.into(), false)
+        get_block_with_cache(block_number, &self.block_cache, &self.rpc_provider)
             .await
-            .wrap_err_with(|| format!("get_block_by_number {} failed", block_number))
             .map(|block| block.map(|block| block.header))
     }
 
@@ -295,11 +344,10 @@ impl RpcProvider {
 
         for block_number in start_block_number..=end_block_number {
             let rpc_provider = Arc::clone(&self.rpc_provider);
+            let block_cache = Arc::clone(&self.block_cache);
+
             tasks.spawn(async move {
-                match rpc_provider
-                    .get_block_by_number(BlockNumberOrTag::Number(block_number), false)
-                    .await
-                {
+                match get_block_with_cache(block_number, &block_cache, &rpc_provider).await {
                     Ok(Some(block)) => Some((block_number, block.header)),
                     Ok(None) => {
                         log::warn!("get_block_by_number {} no result", block_number);

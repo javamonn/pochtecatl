@@ -59,4 +59,10 @@ lazy_static! {
         (BlockId::Latest, BlockId::Latest) => false,
         _ => true,
     };
+    pub static ref AVERAGE_BLOCK_TIME_SECONDS: u64 = get_env_var("AVERAGE_BLOCK_TIME_SECONDS")
+        .wrap_err("Failed to read AVERAGE_BLOCK_TIME_SECONDS from env")
+        .and_then(|v| v
+            .parse()
+            .wrap_err("Failed to decode AVERAGE_BLOCK_TIME_SECONDS"))
+        .unwrap();
 }
