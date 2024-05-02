@@ -55,7 +55,7 @@ lazy_static! {
                 |key| FixedBytes::try_from(key.as_slice()).wrap_err("Failed to create FixedBytes")
             )
             .unwrap();
-    pub static ref IS_BACKFILL: bool = match (END_BLOCK_ID.deref(), START_BLOCK_ID.deref()) {
+    pub static ref IS_BACKTEST: bool = match (END_BLOCK_ID.deref(), START_BLOCK_ID.deref()) {
         (BlockId::Latest, BlockId::Latest) => false,
         _ => true,
     };

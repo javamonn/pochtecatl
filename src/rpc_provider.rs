@@ -215,7 +215,7 @@ impl RpcProvider {
             .wrap_err("get_block_by_number by failed")
             .and_then(|block| block.ok_or(eyre!("get_block_by_number finalized returned None")))?;
 
-        let cache_ttl = if *config::IS_BACKFILL {
+        let cache_ttl = if *config::IS_BACKTEST {
             None
         } else {
             Some(

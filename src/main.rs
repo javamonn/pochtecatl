@@ -50,8 +50,7 @@ async fn main() -> Result<()> {
     let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
 
     let mut price_indexer = make_price_indexer(&config::START_BLOCK_ID, &config::END_BLOCK_ID)?;
-    let trade_controller =
-        Arc::new(TradeController::new(Arc::clone(&rpc_provider)));
+    let trade_controller = Arc::new(TradeController::new(Arc::clone(&rpc_provider)));
 
     let mut strategy_executor =
         UniswapV2StrategyExecuctor::<UniswapV2MomentumStrategy>::with_momentum_strategy(
