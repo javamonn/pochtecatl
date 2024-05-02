@@ -7,7 +7,7 @@ use alloy::{
 
 use eyre::{eyre, Result};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct TradeMetadata<T: ParseableTrade> {
     block_number: BlockNumber,
     block_timestamp: u64,
@@ -78,9 +78,13 @@ impl<T: ParseableTrade + Clone + Copy> TradeMetadata<T> {
     pub fn parsed_trade(&self) -> &T {
         &self.parsed_trade
     }
+
+    pub fn block_number(&self) -> &BlockNumber {
+        &self.block_number
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Trade<T: ParseableTrade> {
     PendingOpen,
     Open(TradeMetadata<T>),

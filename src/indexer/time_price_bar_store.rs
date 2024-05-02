@@ -18,7 +18,7 @@ async fn get_timestamp_range_to_finalize(
 ) -> Option<(ResolutionTimestamp, ResolutionTimestamp)> {
     match rpc_provider.get_finalized_block_header().await {
         Ok(finalized_block_header) => {
-            let end_finalized_timestamp = if *config::IS_BACKFILL {
+            let end_finalized_timestamp = if *config::IS_BACKTEST {
                 inserted_block_resolution_timestamp.previous(&resolution)
             } else {
                 ResolutionTimestamp::from_timestamp(

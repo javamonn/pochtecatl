@@ -81,7 +81,9 @@ impl<S: UniswapV2Strategy + Send + Sync + 'static> StrategyExecutor
     }
 }
 
-async fn handle_indexed_block_message<S: UniswapV2Strategy>(
+async fn handle_indexed_block_message<
+    S: UniswapV2Strategy
+>(
     indexed_block_message: IndexedBlockMessage,
     strategy: &S,
     time_price_bar_store: &TimePriceBarStore,
