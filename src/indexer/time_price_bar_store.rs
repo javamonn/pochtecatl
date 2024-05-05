@@ -1,53 +1,63 @@
 use super::{Block, BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars};
-use crate::{config, rpc_provider::RpcProvider};
+use crate::providers::RpcProvider;
 
-use alloy::primitives::{Address, BlockNumber};
+use alloy::{
+    network::Ethereum,
+    primitives::{Address, BlockNumber},
+    providers::Provider,
+    transports::Transport,
+};
 
 use eyre::{Context, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
+use tracing::warn;
 
 // In a backfill we can finalize up to the last completed time bar resolution tick,
 // as we will never encounter a reorg. In peak, we can only finalize up to the
 // actual finalized block.
-async fn get_timestamp_range_to_finalize(
-    rpc_provider: Arc<RpcProvider>,
+async fn get_timestamp_range_to_finalize<T, P>(
+    rpc_provider: &RpcProvider<T, P>,
     inserted_block_resolution_timestamp: &ResolutionTimestamp,
     last_finalized_timestamp: &Option<ResolutionTimestamp>,
     resolution: &Resolution,
-) -> Option<(ResolutionTimestamp, ResolutionTimestamp)> {
-    match rpc_provider.get_finalized_block_header().await {
-        Ok(finalized_block_header) => {
-            let end_finalized_timestamp = if *config::IS_BACKTEST {
-                inserted_block_resolution_timestamp.previous(&resolution)
-            } else {
-                ResolutionTimestamp::from_timestamp(
-                    finalized_block_header.timestamp.to::<u64>(),
-                    &resolution,
-                )
-            };
-
-            match last_finalized_timestamp {
-                Some(last_finalized_timestamp) => {
-                    if end_finalized_timestamp > *last_finalized_timestamp {
-                        Some((
-                            last_finalized_timestamp.next(&resolution),
-                            end_finalized_timestamp,
-                        ))
-                    } else {
-                        None
-                    }
-                }
-                None => Some((ResolutionTimestamp::zero(), end_finalized_timestamp)),
+    is_backtest: bool,
+) -> Option<(ResolutionTimestamp, ResolutionTimestamp)>
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
+    let end_finalized_timestamp = if is_backtest {
+        inserted_block_resolution_timestamp.previous(&resolution)
+    } else {
+        match rpc_provider
+            .block_provider()
+            .get_finalized_block_header()
+            .await
+        {
+            Ok(finalized_block_header) => ResolutionTimestamp::from_timestamp(
+                finalized_block_header.timestamp.to::<u64>(),
+                &resolution,
+            ),
+            Err(e) => {
+                warn!("Failed to get finalized block header: {}", e);
+                return None;
             }
         }
-        Err(err) => {
-            log::warn!(
-                "Failed to get finalized block header, skipping finalization: {:?}",
-                err
-            );
-            None
+    };
+
+    match last_finalized_timestamp {
+        Some(last_finalized_timestamp) => {
+            if end_finalized_timestamp > *last_finalized_timestamp {
+                Some((
+                    last_finalized_timestamp.next(&resolution),
+                    end_finalized_timestamp,
+                ))
+            } else {
+                None
+            }
         }
+        None => Some((ResolutionTimestamp::zero(), end_finalized_timestamp)),
     }
 }
 
@@ -57,16 +67,18 @@ pub struct TimePriceBarStore {
     last_finalized_timestamp: RwLock<Option<ResolutionTimestamp>>,
     last_inserted_block_number: RwLock<Option<BlockNumber>>,
     retention_count: u64,
+    is_backtest: bool,
 }
 
 impl TimePriceBarStore {
-    pub fn new(resolution: Resolution, retention_count: u64) -> Self {
+    pub fn new(resolution: Resolution, retention_count: u64, is_backtest: bool) -> Self {
         Self {
             resolution,
             time_price_bars: RwLock::new(FnvHashMap::default()),
             last_finalized_timestamp: RwLock::new(None),
             last_inserted_block_number: RwLock::new(None),
             retention_count,
+            is_backtest,
         }
     }
 
@@ -88,16 +100,25 @@ impl TimePriceBarStore {
         *self.last_finalized_timestamp.read().unwrap()
     }
 
-    pub async fn insert_block(&self, rpc_provider: Arc<RpcProvider>, block: &Block) -> Result<()> {
+    pub async fn insert_block<T, P>(
+        &self,
+        rpc_provider: Arc<RpcProvider<T, P>>,
+        block: &Block,
+    ) -> Result<()>
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static,
+    {
         let block_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(block.block_timestamp, &self.resolution);
 
         let last_finalized_timestamp = self.last_finalized_timestamp.read().unwrap().clone();
         let finalize_timestamp_range = get_timestamp_range_to_finalize(
-            rpc_provider,
+            &rpc_provider,
             &block_resolution_timestamp,
             &last_finalized_timestamp,
             &self.resolution,
+            self.is_backtest,
         )
         .await;
 
@@ -107,9 +128,10 @@ impl TimePriceBarStore {
                 match BlockPriceBar::from_uniswap_v2_pair(pair) {
                     Some(block_price_bar) => acc.insert(*pair_address, block_price_bar),
                     None => {
-                        log::warn!(
-                            block_number = block.block_number;
-                            "Failed to create block_price_bar for pair {}", pair_address
+                        warn!(
+                            block_number = block.block_number,
+                            pair_address = pair_address.to_string(),
+                            "Failed to create block_price_bar for pair"
                         );
 
                         None
@@ -228,19 +250,32 @@ mod tests {
         abi::IUniswapV2Pair,
         config,
         indexer::{Resolution, ResolutionTimestamp},
-        rpc_provider::{RpcProvider, TTLCache},
+        providers::{
+            rpc_provider::{new_http_signer_provider, TTLCache},
+            RpcProvider,
+        },
     };
 
     use alloy::{
+        network::Ethereum,
         primitives::{address, uint, BlockNumber},
+        providers::Provider,
         rpc::types::eth::Filter,
         sol_types::SolEvent,
+        transports::Transport,
     };
 
     use eyre::{OptionExt, Result};
     use std::sync::Arc;
 
-    async fn get_block(rpc_provider: Arc<RpcProvider>, block_number: BlockNumber) -> Result<Block> {
+    async fn get_block<T, P>(
+        rpc_provider: Arc<RpcProvider<T, P>>,
+        block_number: BlockNumber,
+    ) -> Result<Block>
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static,
+    {
         let logs_filter = Filter::new()
             .from_block(block_number)
             .to_block(block_number)
@@ -251,7 +286,7 @@ mod tests {
 
         let (header, logs) = {
             let (header_result, logs_result) = tokio::join!(
-                rpc_provider.get_block_header(block_number),
+                rpc_provider.block_provider().get_block_header(block_number),
                 rpc_provider.get_logs(&logs_filter)
             );
 
@@ -265,12 +300,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_range_to_finalize() -> Result<()> {
+    async fn test_get_timestamp_range_to_finalize_backtest() -> Result<()> {
+        let rpc_provider = new_http_signer_provider(&config::RPC_URL, None).await?;
+        let base_finalized_timestamp =
+            ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
+
+        let initial_finalize_range = get_timestamp_range_to_finalize(
+            &rpc_provider,
+            &base_finalized_timestamp,
+            &None,
+            &Resolution::FiveMinutes,
+            true,
+        )
+        .await
+        .expect("Expected initial_finalize_range, but found None");
+
+        assert_eq!(
+            initial_finalize_range,
+            (
+                ResolutionTimestamp::zero(),
+                base_finalized_timestamp.previous(&Resolution::FiveMinutes)
+            )
+        );
+
+        let last_finalized_timestamp =
+            ResolutionTimestamp::from_timestamp(1800_u64, &Resolution::FiveMinutes);
+        let finalize_range = get_timestamp_range_to_finalize(
+            &rpc_provider,
+            &base_finalized_timestamp,
+            &Some(last_finalized_timestamp),
+            &Resolution::FiveMinutes,
+            true,
+        )
+        .await
+        .expect("Expected finalize_range, but found None");
+
+        assert_eq!(
+            finalize_range,
+            (
+                last_finalized_timestamp.next(&Resolution::FiveMinutes),
+                base_finalized_timestamp.previous(&Resolution::FiveMinutes)
+            )
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_timestamp_range_to_finalize_peak() -> Result<()> {
         let mock_finalized_timestamp = uint!(1000_U256);
         let rpc_provider = {
-            let inner = RpcProvider::new(&config::RPC_URL).await?;
+            let inner = new_http_signer_provider(&config::RPC_URL, None).await?;
             let mock_finalized_block_number = 12822402;
             let mut mock_finalized_header = inner
+                .block_provider()
                 .get_block_header(mock_finalized_block_number)
                 .await?
                 .expect("Expected block header, but found None");
@@ -278,7 +361,7 @@ mod tests {
             mock_finalized_header.timestamp = mock_finalized_timestamp.clone();
 
             Arc::new(
-                RpcProvider::new_with_cache(
+                new_http_signer_provider(
                     &config::RPC_URL,
                     Some(TTLCache::new(mock_finalized_header, None)),
                 )
@@ -287,10 +370,11 @@ mod tests {
         };
 
         let initial_finalize_range = get_timestamp_range_to_finalize(
-            Arc::clone(&rpc_provider),
+            &rpc_provider,
             &ResolutionTimestamp::zero(),
             &None,
             &Resolution::FiveMinutes,
+            false,
         )
         .await
         .expect("Expected initial_finalize_range, but found None");
@@ -309,10 +393,11 @@ mod tests {
         let last_finalized_timestamp =
             ResolutionTimestamp::from_timestamp(600_u64, &Resolution::FiveMinutes);
         let finalize_range = get_timestamp_range_to_finalize(
-            Arc::clone(&rpc_provider),
+            &rpc_provider,
             &ResolutionTimestamp::zero(),
             &Some(last_finalized_timestamp),
             &Resolution::FiveMinutes,
+            false,
         )
         .await
         .expect("Expected finalize_range, but found None");
@@ -332,12 +417,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_block() -> Result<()> {
+    async fn test_insert_block_backfill() -> Result<()> {
         let mock_finalized_timestamp = uint!(1000_U256);
         let rpc_provider = {
-            let inner = RpcProvider::new(&config::RPC_URL).await?;
+            let inner = new_http_signer_provider(&config::RPC_URL, None).await?;
             let mock_finalized_block_number = 12822402;
             let mut mock_finalized_header = inner
+                .block_provider()
                 .get_block_header(mock_finalized_block_number)
                 .await?
                 .expect("Expected block header, but found None");
@@ -345,7 +431,7 @@ mod tests {
             mock_finalized_header.timestamp = mock_finalized_timestamp.clone();
 
             Arc::new(
-                RpcProvider::new_with_cache(
+                new_http_signer_provider(
                     &config::RPC_URL,
                     Some(TTLCache::new(mock_finalized_header, None)),
                 )
@@ -355,7 +441,71 @@ mod tests {
 
         // test base case
         {
-            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5);
+            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5, true);
+            let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
+            store
+                .insert_block(Arc::clone(&rpc_provider), &block)
+                .await?;
+
+            assert_eq!(store.last_inserted_block_number(), Some(block.block_number));
+            assert_eq!(
+                store.last_finalized_timestamp(),
+                Some(
+                    ResolutionTimestamp::from_timestamp(
+                        block.block_timestamp,
+                        &Resolution::FiveMinutes
+                    )
+                    .previous(&Resolution::FiveMinutes)
+                )
+            );
+            assert_eq!(
+                store
+                    .time_price_bars()
+                    .read()
+                    .unwrap()
+                    .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+                    .unwrap()
+                    .time_price_bar_range(
+                        &ResolutionTimestamp::zero(),
+                        &ResolutionTimestamp::from_timestamp(
+                            block.block_timestamp,
+                            &Resolution::FiveMinutes
+                        )
+                    )
+                    .len(),
+                1
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_insert_block_peak() -> Result<()> {
+        let mock_finalized_timestamp = uint!(1000_U256);
+        let rpc_provider = {
+            let inner = new_http_signer_provider(&config::RPC_URL, None).await?;
+            let mock_finalized_block_number = 12822402;
+            let mut mock_finalized_header = inner
+                .block_provider()
+                .get_block_header(mock_finalized_block_number)
+                .await?
+                .expect("Expected block header, but found None");
+
+            mock_finalized_header.timestamp = mock_finalized_timestamp.clone();
+
+            Arc::new(
+                new_http_signer_provider(
+                    &config::RPC_URL,
+                    Some(TTLCache::new(mock_finalized_header, None)),
+                )
+                .await?,
+            )
+        };
+
+        // test base case
+        {
+            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5, false);
             let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
             store
                 .insert_block(Arc::clone(&rpc_provider), &block)
@@ -390,7 +540,7 @@ mod tests {
 
         // test reorg handling
         {
-            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5);
+            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5, false);
             let mut blocks = Vec::new();
 
             // Insert blocks in order

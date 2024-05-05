@@ -1,6 +1,7 @@
 use super::{Resolution, ResolutionTimestamp, TimePriceBar};
 
 use std::collections::BTreeMap;
+use tracing::warn;
 
 pub const INDICATOR_EMA_SMOOTHING_FACTOR: f64 = 2.0 / (9.0 + 1.0);
 pub const INDICATOR_BB_PERIOD: u64 = 20;
@@ -60,7 +61,7 @@ impl Indicators {
             }
             (Some(time_price_bar), None) => (time_price_bar.close(), 0.0),
             _ => {
-                log::warn!("No time price bar found at timestamp {:?}", timestamp);
+                warn!("No time price bar found at timestamp {:?}", timestamp);
                 (f64::NAN, 0.0)
             }
         }

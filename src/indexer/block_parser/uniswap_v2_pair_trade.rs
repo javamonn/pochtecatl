@@ -8,6 +8,7 @@ use alloy::{
 };
 
 use fraction::GenericFraction;
+use tracing::instrument;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct UniswapV2PairTrade {
@@ -66,13 +67,16 @@ impl UniswapV2PairTrade {
 }
 
 impl ParseableTrade for UniswapV2PairTrade {
+    #[instrument(skip(logs))]
     fn parse_from_log(
         log: &Log,
         logs: &Vec<Log>,
         relative_log_idx: usize,
     ) -> Option<UniswapV2PairTrade> {
         uniswap_v2_pair_swap_log::parse(&log).and_then(|parsed_swap| {
-            logs.get(relative_log_idx - 1)
+            relative_log_idx
+                .checked_sub(1)
+                .and_then(|prev_log_idx| logs.get(prev_log_idx))
                 .and_then(|prev_log| {
                     // Ensure prev log in the arr is the previous log index in the
                     // same block for the same pair

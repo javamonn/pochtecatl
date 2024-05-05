@@ -1,12 +1,13 @@
 use super::{backtest_util::estimate_gas_fee, TradeMetadata, TradeRequest};
 
-use crate::{
-    abi::uniswap_v2_router, config, indexer::UniswapV2PairTrade, rpc_provider::RpcProvider,
-};
+use crate::{abi::uniswap_v2_router, config, indexer::UniswapV2PairTrade, providers::RpcProvider};
 
 use alloy::{
+    network::Ethereum,
     primitives::{uint, Address, BlockNumber, U256},
+    providers::Provider,
     rpc::types::eth::TransactionRequest,
+    transports::Transport,
 };
 use eyre::Result;
 
@@ -56,8 +57,12 @@ impl UniswapV2CloseTradeRequest {
     }
 }
 
-impl TradeRequest<UniswapV2PairTrade> for UniswapV2CloseTradeRequest {
-    async fn trace(&self, _rpc_provider: &RpcProvider) -> Result<()> {
+impl<T, P> TradeRequest<UniswapV2PairTrade, T, P> for UniswapV2CloseTradeRequest
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
+    async fn trace(&self, _rpc_provider: &RpcProvider<T, P>) -> Result<()> {
         Ok(())
 
         // TODO: fix tracing impl
@@ -79,7 +84,7 @@ impl TradeRequest<UniswapV2PairTrade> for UniswapV2CloseTradeRequest {
 
     async fn as_backtest_trade_metadata(
         &self,
-        rpc_provider: &RpcProvider,
+        rpc_provider: &RpcProvider<T, P>,
     ) -> Result<TradeMetadata<UniswapV2PairTrade>> {
         let trade = if self.token_address < *config::WETH_ADDRESS {
             // token0 is token, token1 is weth

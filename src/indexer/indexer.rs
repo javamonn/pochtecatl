@@ -1,8 +1,13 @@
 use super::{Block, TimePriceBarStore};
 
-use crate::{config, rpc_provider::RpcProvider};
+use crate::{config, providers::RpcProvider};
 
-use alloy::primitives::{Address, BlockNumber, U256};
+use alloy::{
+    network::Ethereum,
+    primitives::{Address, BlockNumber, U256},
+    providers::Provider,
+    transports::Transport,
+};
 use std::sync::{mpsc::Receiver, Arc};
 use tokio::sync::oneshot;
 
@@ -85,8 +90,13 @@ impl IndexedBlockMessage {
     }
 }
 
-pub trait Indexer {
-    fn subscribe(&mut self, rpc_provider: &Arc<RpcProvider>) -> Receiver<IndexedBlockMessage>;
+pub trait Indexer<T, P>
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
+    fn subscribe(&mut self, rpc_provider: &Arc<RpcProvider<T, P>>)
+        -> Receiver<IndexedBlockMessage>;
     fn time_price_bar_store(&self) -> Arc<TimePriceBarStore>;
 }
 
@@ -94,7 +104,7 @@ pub trait Indexer {
 mod tests {
     use super::*;
 
-    use crate::abi::IUniswapV2Pair;
+    use crate::{abi::IUniswapV2Pair, providers::rpc_provider::new_http_signer_provider};
 
     use alloy::{
         primitives::{address, uint},
@@ -105,7 +115,7 @@ mod tests {
 
     #[tokio::test]
     pub async fn test_from_block_with_ack() -> Result<()> {
-        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
+        let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
         let block_number = 12822402;
         let logs_filter = Filter::new()
             .from_block(block_number)
@@ -117,7 +127,7 @@ mod tests {
 
         let (header, logs) = {
             let (header_result, logs_result) = tokio::join!(
-                rpc_provider.get_block_header(block_number),
+                rpc_provider.block_provider().get_block_header(block_number),
                 rpc_provider.get_logs(&logs_filter)
             );
 

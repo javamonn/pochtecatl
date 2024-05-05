@@ -1,113 +1,74 @@
-use crate::{config, indexer::ParseableTrade, rpc_provider::RpcProvider};
+use super::{AddressTrades, Trade, TradeMetadata, TradeRequest, Trades, Transaction};
+use crate::{config, indexer::ParseableTrade, providers::RpcProvider};
 
-use super::{Trade, TradeMetadata, TradeRequest, Transaction};
-
-use alloy::primitives::Address;
+use alloy::{network::Ethereum, providers::Provider, transports::Transport};
 
 use eyre::{eyre, Result};
-use fnv::FnvHashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tracing::error;
 
-pub struct AddressTrades<P: ParseableTrade> {
-    active: Option<Trade<P>>,
-    closed: Vec<(TradeMetadata<P>, TradeMetadata<P>)>,
-}
-
-impl<P: ParseableTrade> AddressTrades<P> {
-    pub fn close(&mut self, open_trade: TradeMetadata<P>, committed_trade: TradeMetadata<P>) {
-        self.active = None;
-        self.closed.push((open_trade, committed_trade));
-    }
-
-    pub fn set_active(&mut self, trade: Option<Trade<P>>) -> Option<Trade<P>> {
-        std::mem::replace(&mut self.active, trade)
-    }
-
-    pub fn active(&self) -> &Option<Trade<P>> {
-        &self.active
-    }
-
-    pub fn closed(&self) -> &Vec<(TradeMetadata<P>, TradeMetadata<P>)> {
-        &self.closed
-    }
-}
-
-impl<P: ParseableTrade> Default for AddressTrades<P> {
-    fn default() -> Self {
-        Self {
-            active: None,
-            closed: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Trades<P: ParseableTrade>(pub Arc<RwLock<FnvHashMap<Address, AddressTrades<P>>>>);
-impl<P: ParseableTrade> Default for Trades<P> {
-    fn default() -> Self {
-        Self(Arc::new(RwLock::new(FnvHashMap::default())))
-    }
-}
-
-impl<P: ParseableTrade> Trades<P> {
-    pub fn set_active(
-        &self,
-        address: &Address,
-        trade: Option<Trade<P>>,
-    ) -> Result<Option<Trade<P>>> {
-        println!("setting active for {:?}", address);
-        self.0
-            .write()
-            .unwrap()
-            .get_mut(address)
-            .map(|trades| trades.set_active(trade))
-            .ok_or_else(|| eyre!("Missing trade for {}", address))
-    }
-
-    pub fn close(
-        &self,
-        address: &Address,
-        open_trade: TradeMetadata<P>,
-        committed_trade: TradeMetadata<P>,
-    ) -> Result<()> {
-        self.0
-            .write()
-            .unwrap()
-            .get_mut(address)
-            .map(|trades| trades.close(open_trade, committed_trade))
-            .ok_or_else(|| eyre!("Missing trade for {}", address))
-    }
-}
-
-pub struct TradeController<P: ParseableTrade> {
-    rpc_provider: Arc<RpcProvider>,
-    trades: Trades<P>,
-}
-
-impl<P> TradeController<P>
+pub struct TradeController<PT, T, P>
 where
-    P: ParseableTrade,
+    PT: ParseableTrade,
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
 {
-    pub fn new(rpc_provider: Arc<RpcProvider>) -> Self {
+    rpc_provider: Arc<RpcProvider<T, P>>,
+    trades: Trades<PT>,
+}
+
+impl<PT, T, P> TradeController<PT, T, P>
+where
+    PT: ParseableTrade,
+    T: Transport + Clone,
+    P: Provider<T, Ethereum>,
+{
+    pub fn new(rpc_provider: Arc<RpcProvider<T, P>>) -> Self {
         TradeController {
             rpc_provider,
             trades: Trades::default(),
         }
     }
 
-    pub fn trades(&self) -> &Trades<P> {
+    pub fn trades(&self) -> &Trades<PT> {
         &self.trades
+    }
+
+    pub fn pending_handle(&self) -> tokio::task::JoinHandle<()> {
+        let trades = self.trades.clone();
+
+        tokio::spawn(async move {
+            loop {
+                {
+                    let trades = trades.0.read().unwrap();
+                    // If no pending trades exist, break out of loop
+                    if !trades.values().any(|trade| {
+                        matches!(
+                            trade.active(),
+                            Some(Trade::PendingOpen) | Some(Trade::PendingClose)
+                        )
+                    }) {
+                        break;
+                    }
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    *config::AVERAGE_BLOCK_TIME_SECONDS,
+                ))
+                .await;
+            }
+        })
     }
 
     async fn send_tx<F, R>(
         &self,
         request: R,
-        rpc_provider: Arc<RpcProvider>,
+        rpc_provider: Arc<RpcProvider<T, P>>,
         on_confirmed: F,
     ) -> Result<()>
     where
-        R: TradeRequest<P>,
-        F: FnOnce(Result<TradeMetadata<P>>) + Send + Sync + 'static,
+        R: TradeRequest<PT, T, P>,
+        F: FnOnce(Result<TradeMetadata<PT>>) + Send + Sync + 'static,
     {
         if *config::IS_BACKTEST || cfg!(test) {
             let rpc_provider = rpc_provider.clone();
@@ -133,7 +94,10 @@ where
         }
     }
 
-    pub async fn close_position<R: TradeRequest<P>>(&self, close_trade_request: R) -> Result<()> {
+    pub async fn close_position<R: TradeRequest<PT, T, P>>(
+        &self,
+        close_trade_request: R,
+    ) -> Result<()> {
         // ensure that an existing open trade exists for this pair, update it to pending close
 
         let open_trade = {
@@ -177,7 +141,10 @@ where
                     Ok(committed_trade) => {
                         // Backtest success: update trade closed, clear active trade
                         if let Err(err) = trades.close(&address, open_trade, committed_trade) {
-                            log::error!("Failed to close trade for {:?}: {:?}", address, err);
+                            error!(
+                                address = address.to_string(),
+                                "Failed to close trade: {:?}", err
+                            );
                         }
                     }
                     Err(err) => {
@@ -185,14 +152,17 @@ where
                         if let Err(revert_err) =
                             trades.set_active(&address, Some(Trade::Open(open_trade)))
                         {
-                            log::error!(
-                        "Failed to revert pending close for {:?}: {:?}, original error: {:?}",
-                        address,
-                        revert_err,
-                        err
-                    );
+                            error!(
+                                address = address.to_string(),
+                                "Failed to revert pending close: {:?}, original error: {:?}",
+                                revert_err,
+                                err
+                            );
                         } else {
-                            log::error!("Failed to close trade for {:?}: {:?}", address, err);
+                            error!(
+                                address = address.to_string(),
+                                "Failed to close trade: {:?}", err
+                            );
                         }
                     }
                 },
@@ -201,7 +171,10 @@ where
         {
             Ok(_) => Ok(()),
             Err(err) => {
-                log::error!("Failed to submit pending tx for {:?}: {:?}", address, err);
+                error!(
+                    address = address.to_string(),
+                    "Failed to submit pending tx: {:?}", err
+                );
 
                 // Tx failed to send - revert the pending close
                 self.trades
@@ -212,7 +185,10 @@ where
         }
     }
 
-    pub async fn open_position<R: TradeRequest<P>>(&self, open_position_request: R) -> Result<()> {
+    pub async fn open_position<R: TradeRequest<PT, T, P>>(
+        &self,
+        open_position_request: R,
+    ) -> Result<()> {
         // ensure that we do not already have a position for this pair and add
         // the position to the store
         {
@@ -257,19 +233,25 @@ where
                         if let Err(err) =
                             trades.set_active(&address, Some(Trade::Open(committed_trade)))
                         {
-                            log::error!("Failed to open trade for {:?}: {:?}", address, err);
+                            error!(
+                                address = address.to_string(),
+                                "Failed to open trade: {:?}", err
+                            );
                         }
                     }
                     Err(err) => {
                         if let Err(revert_err) = trades.set_active(&address, None) {
-                            log::error!(
-                            "Failed to revert pending open for {:?}: {:?}, original error: {:?}",
-                            address,
-                            revert_err,
-                            err
-                        );
+                            error!(
+                                address = address.to_string(),
+                                "Failed to revert pending open: {:?}, original error: {:?}",
+                                revert_err,
+                                err
+                            );
                         } else {
-                            log::error!("Failed to open trade for {:?}: {:?}", address, err);
+                            error!(
+                                address = address.to_string(),
+                                "Failed to open trade: {:?}", err
+                            );
                         }
                     }
                 },
@@ -278,14 +260,16 @@ where
         {
             Ok(_) => Ok(()),
             Err(err) => {
-                log::error!("Failed to submit pending tx for {:?}: {:?}", address, err);
+                error!(
+                    address = address.to_string(),
+                    "Failed to submit pending tx: {:?}", err
+                );
 
                 // Tx failed to send - remove the pending position from the store
                 if let Err(err) = self.trades.set_active(&address, None) {
-                    log::error!(
-                        "Failed to remove pending trade for {:?}: {:?}",
-                        address,
-                        err
+                    error!(
+                        address = address.to_string(),
+                        "Failed to remove pending trade: {:?}", err
                     );
                 }
 
@@ -302,7 +286,7 @@ mod tests {
     use crate::{
         config,
         indexer::ParseableTrade,
-        rpc_provider::RpcProvider,
+        providers::{rpc_provider::new_http_signer_provider, RpcProvider},
         trade_controller::{TradeMetadata, TradeRequest},
     };
 
@@ -311,8 +295,11 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     use alloy::{
+        network::Ethereum,
         primitives::{Address, BlockNumber, U256},
+        providers::Provider,
         rpc::types::eth::{Log, TransactionRequest},
+        transports::Transport,
     };
 
     #[derive(Copy, Clone, Debug)]
@@ -349,7 +336,11 @@ mod tests {
         }
     }
 
-    impl TradeRequest<MockTrade> for MockTradeRequest {
+    impl<T, P> TradeRequest<MockTrade, T, P> for MockTradeRequest
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum>,
+    {
         fn as_transaction_request(&self, _signer_address: Address) -> TransactionRequest {
             unimplemented!()
         }
@@ -358,13 +349,13 @@ mod tests {
             &self.address
         }
 
-        async fn trace(&self, _rpc_provider: &RpcProvider) -> Result<()> {
+        async fn trace(&self, _rpc_provider: &RpcProvider<T, P>) -> Result<()> {
             Ok(())
         }
 
         async fn as_backtest_trade_metadata(
             &self,
-            _rpc_provider: &RpcProvider,
+            _rpc_provider: &RpcProvider<T, P>,
         ) -> Result<TradeMetadata<MockTrade>> {
             let confirmed_lock = Arc::clone(&self.confirmed_lock);
             let block_number = self.block_number;
@@ -390,8 +381,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_position() -> Result<()> {
-        let controller: TradeController<MockTrade> =
-            TradeController::new(Arc::new(RpcProvider::new(&config::RPC_URL).await?));
+        let controller = TradeController::new(Arc::new(
+            new_http_signer_provider(&config::RPC_URL, None).await?,
+        ));
         let req = MockTradeRequest::new(Address::ZERO, 0, false);
         let confirmed_lock = req.confirmed_lock();
 
@@ -436,8 +428,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_close_position() -> Result<()> {
-        let controller: TradeController<MockTrade> =
-            TradeController::new(Arc::new(RpcProvider::new(&config::RPC_URL).await?));
+        let controller = TradeController::new(Arc::new(
+            new_http_signer_provider(&config::RPC_URL, None).await?,
+        ));
 
         // open a position
         controller
@@ -462,8 +455,6 @@ mod tests {
                 .get(&Address::ZERO)
                 .and_then(|trades| trades.active().as_ref())
                 .ok_or_else(|| eyre!("Expected active trade"))?;
-
-            println!("{:?}", active_trade);
 
             assert!(matches!(active_trade, Trade::PendingClose));
         }
@@ -493,8 +484,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_position_revert() -> Result<()> {
-        let controller: TradeController<MockTrade> =
-            TradeController::new(Arc::new(RpcProvider::new(&config::RPC_URL).await?));
+        let controller = TradeController::new(Arc::new(
+            new_http_signer_provider(&config::RPC_URL, None).await?,
+        ));
         let open_req = MockTradeRequest::new(Address::ZERO, 0, true);
         let confirmed_lock = open_req.confirmed_lock();
 
@@ -519,7 +511,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_close_position_revert() -> Result<()> {
-        let controller = TradeController::new(Arc::new(RpcProvider::new(&config::RPC_URL).await?));
+        let controller = TradeController::new(Arc::new(
+            new_http_signer_provider(&config::RPC_URL, None).await?,
+        ));
 
         // Open a position to test close later
         {

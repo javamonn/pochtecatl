@@ -1,13 +1,16 @@
-use crate::{abi::IUniswapV2Pair, rpc_provider::RpcProvider};
+use crate::{abi::IUniswapV2Pair, providers::RpcProvider};
 
 use super::{
     time_price_bar_store::TimePriceBarStore, Block, IndexedBlockMessage, Indexer, Resolution,
 };
 
 use alloy::{
+    network::Ethereum,
     primitives::BlockNumber,
+    providers::Provider,
     rpc::types::eth::{Filter, Log as RpcLog},
     sol_types::SolEvent,
+    transports::Transport,
 };
 
 use eyre::{Context, Result};
@@ -20,6 +23,7 @@ use std::{
     },
 };
 use tokio::task::{JoinHandle, JoinSet};
+use tracing::{debug, error, instrument, warn};
 
 pub struct BlockRangeIndexer {
     start_block_number: BlockNumber,
@@ -32,23 +36,32 @@ impl BlockRangeIndexer {
     pub fn new<B: Into<BlockNumber>>(
         start_block_number: B,
         end_block_number: B,
+        is_backtest: bool,
     ) -> BlockRangeIndexer {
         BlockRangeIndexer {
             start_block_number: start_block_number.into(),
             end_block_number: end_block_number.into(),
             index_handle: None,
-            time_price_bar_store: Arc::new(TimePriceBarStore::new(Resolution::FiveMinutes, 60)),
+            time_price_bar_store: Arc::new(TimePriceBarStore::new(
+                Resolution::FiveMinutes,
+                60,
+                is_backtest,
+            )),
         }
     }
 }
 
 const BLOCK_RANGE_STEP_BY: u64 = 100;
 
-async fn get_parsed_blocks(
-    rpc_provider: Arc<RpcProvider>,
+async fn get_parsed_blocks<T, P>(
+    rpc_provider: Arc<RpcProvider<T, P>>,
     start_block_number: BlockNumber,
     end_block_number: BlockNumber,
-) -> Result<BTreeMap<BlockNumber, Block>> {
+) -> Result<BTreeMap<BlockNumber, Block>>
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
     let filter = Filter::new()
         .from_block(start_block_number)
         .to_block(end_block_number)
@@ -59,15 +72,18 @@ async fn get_parsed_blocks(
 
     let (logs, mut headers_by_block_number) = tokio::join!(
         rpc_provider.get_logs(&filter),
-        rpc_provider.get_block_headers_by_range(start_block_number, end_block_number)
+        rpc_provider
+            .block_provider()
+            .get_block_headers_by_range(start_block_number, end_block_number)
     );
 
     let mut logs_by_block_number: BTreeMap<BlockNumber, Vec<RpcLog>> = logs
         .unwrap_or_else(|err| {
-            log::error!(
+            error!(
                 range_start_block_number = start_block_number,
-                range_end_block_number = end_block_number;
-                "get_logs failed: {:?}", err
+                range_end_block_number = end_block_number,
+                "get_logs failed: {:?}",
+                err
             );
             Vec::new()
         })
@@ -88,7 +104,7 @@ async fn get_parsed_blocks(
             headers_by_block_number.remove(&block_number),
             logs_by_block_number.remove(&block_number),
         ) {
-            (Some(block_header), Some(block_logs)) => {
+            (Some(Some(block_header)), Some(block_logs)) => {
                 let rpc_provider = Arc::clone(&rpc_provider);
                 tasks.spawn(async move {
                     Block::parse(rpc_provider, &block_header, &block_logs)
@@ -97,10 +113,16 @@ async fn get_parsed_blocks(
                 });
             }
             (_, None) => {
-                log::warn!("Expected logs for block {} but found none", block_number);
+                warn!(
+                    block_number = block_number,
+                    "Expected logs for block but found none"
+                );
             }
-            (None, _) => {
-                log::warn!("Expected header for block {} but found none", block_number);
+            (None, _) | (Some(None), _) => {
+                warn!(
+                    block_number = block_number,
+                    "Expected header for block but found none"
+                );
             }
         }
     }
@@ -111,10 +133,10 @@ async fn get_parsed_blocks(
                 output.insert(block.block_number, block);
             }
             Ok(Err(err)) => {
-                log::error!("Block::parse error: {:?}", err);
+                error!("Block::parse error: {:?}", err);
             }
             Err(err) => {
-                log::error!("join_next error: {:?}", err);
+                error!("join_next error: {:?}", err);
             }
         }
     }
@@ -122,13 +144,18 @@ async fn get_parsed_blocks(
     Ok(output)
 }
 
-async fn index_blocks(
-    rpc_provider: Arc<RpcProvider>,
+#[instrument(skip(rpc_provider, time_price_bar_store, indexed_block_message_sender))]
+async fn index_blocks<T, P>(
+    rpc_provider: Arc<RpcProvider<T, P>>,
     time_price_bar_store: Arc<TimePriceBarStore>,
     start_block_number: BlockNumber,
     end_block_number: BlockNumber,
     indexed_block_message_sender: SyncSender<IndexedBlockMessage>,
-) -> Result<()> {
+) -> Result<()>
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
     for range_start_block_number in
         (start_block_number..=end_block_number).step_by(BLOCK_RANGE_STEP_BY as usize)
     {
@@ -144,10 +171,20 @@ async fn index_blocks(
         )
         .await?;
 
+        debug!(
+            range_start_block_number = range_start_block_number,
+            range_end_block_number = range_end_block_number,
+            "parsed blocks"
+        );
+
         for parsed_block in parsed_blocks.into_values() {
+            debug!(block_number = parsed_block.block_number, "inserting block");
+
             time_price_bar_store
                 .insert_block(Arc::clone(&rpc_provider), &parsed_block)
                 .await?;
+
+            debug!(block_number = parsed_block.block_number, "inserted block");
 
             let (indexed_block_message, ack_receiver) =
                 IndexedBlockMessage::from_block_with_ack(&parsed_block);
@@ -155,16 +192,32 @@ async fn index_blocks(
             // sync channel will block until the receiver receives the message
             indexed_block_message_sender.send(indexed_block_message)?;
 
-            // because this is a backfill, we wait for the receiver to fully process the indexed block
+            // because this is a backfill, we wait for the receiver to fully process
+            // the indexed block
+            debug!("waiting for ack");
             ack_receiver.await?;
+            debug!("ack received");
         }
+
+        debug!(
+            range_start_block_number = range_start_block_number,
+            range_end_block_number = range_end_block_number,
+            "indexed block range step"
+        );
     }
 
     Ok(())
 }
 
-impl Indexer for BlockRangeIndexer {
-    fn subscribe(&mut self, rpc_provider: &Arc<RpcProvider>) -> Receiver<IndexedBlockMessage> {
+impl<T, P> Indexer<T, P> for BlockRangeIndexer
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
+    fn subscribe(
+        &mut self,
+        rpc_provider: &Arc<RpcProvider<T, P>>,
+    ) -> Receiver<IndexedBlockMessage> {
         let (indexed_block_message_sender, indexed_block_message_receiver) = sync_channel(0);
 
         let start_block_number = self.start_block_number;
@@ -174,7 +227,7 @@ impl Indexer for BlockRangeIndexer {
         let time_price_bar_store = Arc::clone(&self.time_price_bar_store);
 
         let index_handle = tokio::spawn(async move {
-            index_blocks(
+            let res = index_blocks(
                 rpc_provider,
                 time_price_bar_store,
                 start_block_number,
@@ -182,6 +235,18 @@ impl Indexer for BlockRangeIndexer {
                 indexed_block_message_sender,
             )
             .await
+            .inspect_err(|err| {
+                error!(
+                    start_block_number = start_block_number,
+                    end_block_number = end_block_number,
+                    "index_blocks failed: {:?}",
+                    err
+                );
+            });
+
+            debug!("index handle end");
+
+            res
         });
 
         self.index_handle = Some(index_handle);
@@ -198,20 +263,19 @@ impl Indexer for BlockRangeIndexer {
 mod tests {
     use super::get_parsed_blocks;
 
-    use crate::{config, rpc_provider::RpcProvider};
+    use crate::{config, providers::rpc_provider::new_http_signer_provider};
 
     use eyre::Result;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_get_parsed_blocks() -> Result<()> {
-        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
+        let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
 
-        let parsed_blocks =
-            get_parsed_blocks(rpc_provider, 12822402, 12822404).await?;
+        let parsed_blocks = get_parsed_blocks(rpc_provider, 13868901, 13868911).await?;
 
-        assert_eq!(parsed_blocks.len(), 3);
-        assert!(parsed_blocks.contains_key(&12822402));
+        assert_eq!(parsed_blocks.len(), 11);
+        assert!(parsed_blocks.contains_key(&13868901));
 
         Ok(())
     }

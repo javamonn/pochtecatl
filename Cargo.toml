@@ -3,6 +3,9 @@ name = "pochtecatl"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+local = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -19,6 +22,9 @@ ruint = "1.12.1"
 fraction = "0.15.1"
 lru = "0.12.3"
 dotenvy = "0.15.7"
+hex = "0.4.3"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "json"] }
 
 alloy = { git = "https://github.com/alloy-rs/alloy", rev = "bfd0fda", features = [
     "contract",
@@ -41,4 +47,5 @@ alloy = { git = "https://github.com/alloy-rs/alloy", rev = "bfd0fda", features =
     "signer-wallet",
     # "signer-yubihsm",
 ] }
-hex = "0.4.3"
+url = "2.5.0"
+reqwest = "0.12.4"

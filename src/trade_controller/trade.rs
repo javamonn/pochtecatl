@@ -1,26 +1,29 @@
-use crate::{indexer::ParseableTrade, rpc_provider::RpcProvider};
+use crate::{indexer::ParseableTrade, providers::RpcProvider};
 
 use alloy::{
+    network::Ethereum,
     primitives::{BlockNumber, U256},
+    providers::Provider,
     rpc::types::eth::TransactionReceipt,
+    transports::Transport,
 };
 
 use eyre::{eyre, Result};
 
 #[derive(Clone, Copy, Debug)]
-pub struct TradeMetadata<T: ParseableTrade> {
+pub struct TradeMetadata<PT: ParseableTrade> {
     block_number: BlockNumber,
     block_timestamp: u64,
     gas_fee: U256,
-    parsed_trade: T,
+    parsed_trade: PT,
 }
 
-impl<T: ParseableTrade + Clone + Copy> TradeMetadata<T> {
+impl<PT: ParseableTrade> TradeMetadata<PT> {
     pub fn new(
         block_number: BlockNumber,
         block_timestamp: u64,
         gas_fee: U256,
-        parsed_trade: T,
+        parsed_trade: PT,
     ) -> Self {
         Self {
             block_number,
@@ -30,10 +33,14 @@ impl<T: ParseableTrade + Clone + Copy> TradeMetadata<T> {
         }
     }
 
-    pub async fn from_receipt(
+    pub async fn from_receipt<T, P>(
         receipt: &TransactionReceipt,
-        rpc_provider: &RpcProvider,
-    ) -> Result<Self> {
+        rpc_provider: &RpcProvider<T, P>,
+    ) -> Result<Self>
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static,
+    {
         let block_number = receipt
             .block_number
             .ok_or_else(|| eyre!("Block number not found"))?;
@@ -56,6 +63,7 @@ impl<T: ParseableTrade + Clone + Copy> TradeMetadata<T> {
                 Err(eyre!("No Uniswap V2 pair trade found in receipt"))
             })?;
         let block_timestamp = rpc_provider
+            .block_provider()
             .get_block_header(block_number)
             .await
             .and_then(|header| {
@@ -75,7 +83,7 @@ impl<T: ParseableTrade + Clone + Copy> TradeMetadata<T> {
         &self.block_timestamp
     }
 
-    pub fn parsed_trade(&self) -> &T {
+    pub fn parsed_trade(&self) -> &PT {
         &self.parsed_trade
     }
 
@@ -89,16 +97,14 @@ pub enum Trade<T: ParseableTrade> {
     PendingOpen,
     Open(TradeMetadata<T>),
     PendingClose,
-    Closed(TradeMetadata<T>, TradeMetadata<T>),
 }
 
 impl<T: ParseableTrade> Trade<T> {
-    pub fn label (&self) -> &str {
+    pub fn label(&self) -> &str {
         match self {
             Trade::PendingOpen => "Pending Open",
             Trade::Open(_) => "Open",
             Trade::PendingClose => "Pending Close",
-            Trade::Closed(_, _) => "Closed",
         }
     }
 }

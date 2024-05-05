@@ -1,12 +1,13 @@
 use super::{backtest_util::estimate_gas_fee, TradeMetadata, TradeRequest};
 
-use crate::{
-    abi::uniswap_v2_router, config, indexer::UniswapV2PairTrade, rpc_provider::RpcProvider,
-};
+use crate::{abi::uniswap_v2_router, config, indexer::UniswapV2PairTrade, providers::RpcProvider};
 
 use alloy::{
+    network::Ethereum,
     primitives::{uint, Address, BlockNumber, U256},
+    providers::Provider,
     rpc::types::eth::TransactionRequest,
+    transports::Transport,
 };
 
 use eyre::Result;
@@ -66,7 +67,11 @@ impl UniswapV2OpenTradeRequest {
     }
 }
 
-impl TradeRequest<UniswapV2PairTrade> for UniswapV2OpenTradeRequest {
+impl<T, P> TradeRequest<UniswapV2PairTrade, T, P> for UniswapV2OpenTradeRequest
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
     fn address(&self) -> &Address {
         &self.pair_address
     }
@@ -84,7 +89,7 @@ impl TradeRequest<UniswapV2PairTrade> for UniswapV2OpenTradeRequest {
 
     async fn as_backtest_trade_metadata(
         &self,
-        rpc_provider: &RpcProvider,
+        rpc_provider: &RpcProvider<T, P>,
     ) -> Result<TradeMetadata<UniswapV2PairTrade>> {
         let (eth_amount_in, output_token_amount_min) = self.swap_params();
         let trade = if self.token_address < *config::WETH_ADDRESS {
@@ -122,7 +127,7 @@ impl TradeRequest<UniswapV2PairTrade> for UniswapV2OpenTradeRequest {
         ))
     }
 
-    async fn trace(&self, _rpc_provider: &RpcProvider) -> Result<()> {
+    async fn trace(&self, _rpc_provider: &RpcProvider<T, P>) -> Result<()> {
         Ok(())
 
         // TODO: fix tracing impl
@@ -201,7 +206,9 @@ impl TradeRequest<UniswapV2PairTrade> for UniswapV2OpenTradeRequest {
 
 #[cfg(test)]
 mod tests {
-    use crate::{config, rpc_provider::RpcProvider, trade_controller::TradeRequest};
+    use crate::{
+        config, providers::rpc_provider::new_http_signer_provider, trade_controller::TradeRequest,
+    };
 
     use super::UniswapV2OpenTradeRequest;
 
@@ -212,14 +219,16 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_trace() -> Result<()> {
-        let rpc_provider = RpcProvider::new(&config::RPC_URL).await?;
+        let rpc_provider = new_http_signer_provider(&config::RPC_URL, None).await?;
         let token_address = address!("5e9fe073df7ce50e91eb9cbb010b99ef6035a97d");
         let pair_address = address!("3c6554c1ef9845d629d333a24ef1b13fcbc89577");
         let block_number = 13119629;
 
         let (block_header_result, pair_reserves_result) = tokio::join!(
-            rpc_provider.get_block_header(block_number),
-            rpc_provider.get_uniswap_v2_pair_reserves(pair_address, Some(block_number.into()))
+            rpc_provider.block_provider().get_block_header(block_number),
+            rpc_provider
+                .uniswap_v2_pair_provider()
+                .get_uniswap_v2_pair_reserves(pair_address, Some(block_number.into()))
         );
 
         let block_timestamp = block_header_result?
