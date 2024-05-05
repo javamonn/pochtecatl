@@ -1,16 +1,20 @@
 use super::{ParseableTrade, UniswapV2PairTrade};
 
-use crate::{config, rpc_provider::RpcProvider};
+use crate::{config, providers::RpcProvider};
 
 use alloy::{
     primitives::{Address, BlockHash, BlockNumber},
     rpc::types::eth::{Header, Log},
+    transports::Transport,
+    network::Ethereum,
+    providers::Provider,
 };
 
 use eyre::{eyre, Result};
 use fnv::FnvHashMap;
 use std::sync::Arc;
 use tokio::task::JoinSet;
+use tracing::{error, instrument, warn};
 
 pub struct UniswapV2Pair {
     pub token_address: Address,
@@ -43,11 +47,22 @@ impl Block {
         }
     }
 
-    pub async fn parse(
-        rpc_provider: Arc<RpcProvider>,
+    #[instrument(
+        skip_all, 
+        fields(
+            block_number=header.number.map(|n| n.to_string()),
+            block_hash=header.hash.map(|h| h.to_string())
+        )
+    )]
+    pub async fn parse<T, P>(
+        rpc_provider: Arc<RpcProvider<T, P>>,
         header: &Header,
         logs: &Vec<Log>,
-    ) -> Result<Self> {
+    ) -> Result<Self> 
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static
+    {
         let mut uniswap_v2_pairs = Vec::new();
         for (idx, log) in logs.iter().enumerate() {
             // Try to parse a uniswap v2 trade
@@ -87,11 +102,9 @@ impl Block {
                         }
                     }
                     None => {
-                        log::warn!(
-                            block_number = block.block_number.to_string(),
-                            block_hash = block.block_hash.to_string();
-                            "failed to get pair token addresses for pair_address: {}",
-                            pair_address
+                        warn!(
+                            pair_address = pair_address.to_string(),
+                            "failed to get pair token addresses",
                         );
                     }
                 }
@@ -120,12 +133,14 @@ impl TryFrom<&Header> for Block {
     }
 }
 
-async fn get_block_uniswap_v2_pair_token_addresses<I>(
-    rpc_provider: Arc<RpcProvider>,
+async fn get_block_uniswap_v2_pair_token_addresses<I, T, P>(
+    rpc_provider: Arc<RpcProvider<T, P>>,
     pair_addresses: I,
 ) -> FnvHashMap<Address, (Address, Address)>
 where
     I: Iterator<Item = Address>,
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
 {
     let mut tasks = JoinSet::new();
     let mut output = FnvHashMap::default();
@@ -134,15 +149,15 @@ where
         let rpc_provider = Arc::clone(&rpc_provider);
         tasks.spawn(async move {
             match rpc_provider
+                .uniswap_v2_pair_provider()
                 .get_uniswap_v2_pair_token_addresses(pair_address)
                 .await
             {
                 Ok(token_addresses) => Some((pair_address, token_addresses)),
                 Err(err) => {
-                    log::error!(
-                        "get_uniswap_v2_pair_token_addresses {} failed: {:?}",
-                        pair_address,
-                        err
+                    error!(
+                        pair_address = pair_address.to_string(),
+                        "get_uniswap_v2_pair_token_addresses failed: {:?}", err
                     );
                     None
                 }
@@ -157,7 +172,7 @@ where
             }
             Ok(None) => {}
             Err(err) => {
-                log::error!("join_next error: {:?}", err);
+                error!("join_next error: {:?}", err);
             }
         }
     }
@@ -171,7 +186,7 @@ mod tests {
 
     use crate::{
         abi::IUniswapV2Pair, config, indexer::block_parser::UniswapV2PairTrade,
-        rpc_provider::RpcProvider,
+        providers::rpc_provider::new_http_signer_provider,
     };
 
     use alloy::{
@@ -184,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse() -> eyre::Result<()> {
-        let rpc_provider = Arc::new(RpcProvider::new(&config::RPC_URL).await?);
+        let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
         let block_number = 12822402;
         let logs_filter = Filter::new()
             .from_block(block_number)
@@ -196,7 +211,7 @@ mod tests {
 
         let (header, logs) = {
             let (header_result, logs_result) = tokio::join!(
-                rpc_provider.get_block_header(block_number),
+                rpc_provider.block_provider().get_block_header(block_number),
                 rpc_provider.get_logs(&logs_filter)
             );
 

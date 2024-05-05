@@ -1,22 +1,30 @@
 use alloy::{
+    network::Ethereum,
     primitives::{BlockNumber, U256},
+    providers::Provider,
     rpc::types::eth::{Block, BlockTransactions},
+    transports::Transport,
 };
 
 use eyre::{eyre, Result};
 
-use crate::rpc_provider::RpcProvider;
+use crate::providers::RpcProvider;
 
-// Gets the effective_gas_price of the tx in the middle of the block we would've confirmed in
-// while backtesting, and multiples it by the gas used to get the estimated gas fee.
-pub async fn estimate_gas_fee(
-    rpc_provider: &RpcProvider,
+// Gets the effective_gas_price of the tx in the middle of the block we would've
+// confirmed in while backtesting, and multiples it by the gas used to
+// get the estimated gas fee.
+pub async fn estimate_gas_fee<T: Transport + Clone, P: Provider<T, Ethereum> + 'static>(
+    rpc_provider: &RpcProvider<T, P>,
     gas: U256,
     block_number: BlockNumber,
 ) -> Result<U256> {
     // The effective gas price paid for the tx in the middle of the block we would've
     // confirmed in.
-    match rpc_provider.get_block(block_number).await? {
+    match rpc_provider
+        .block_provider()
+        .get_block(block_number)
+        .await?
+    {
         Some(Block {
             transactions: BlockTransactions::Hashes(hashes),
             ..

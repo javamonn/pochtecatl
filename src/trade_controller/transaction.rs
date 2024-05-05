@@ -1,11 +1,13 @@
 use super::trade::TradeMetadata;
 
-use crate::{indexer::ParseableTrade, rpc_provider::RpcProvider};
+use crate::{indexer::ParseableTrade, providers::RpcProvider};
 
 use alloy::{
+    network::Ethereum,
     primitives::TxHash,
     providers::{PendingTransactionBuilder, Provider},
     rpc::types::eth::TransactionRequest,
+    transports::Transport,
 };
 
 use eyre::{Result, WrapErr};
@@ -19,7 +21,14 @@ impl Display for Transaction {
     }
 }
 impl Transaction {
-    pub async fn send(tx_request: TransactionRequest, rpc_provider: &RpcProvider) -> Result<Self> {
+    pub async fn send<T, P>(
+        tx_request: TransactionRequest,
+        rpc_provider: &RpcProvider<T, P>,
+    ) -> Result<Self>
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static,
+    {
         rpc_provider
             .send_transaction(tx_request)
             .await
@@ -27,10 +36,15 @@ impl Transaction {
             .wrap_err("Failed to send_transaction")
     }
 
-    pub async fn into_trade_metadata<T: ParseableTrade>(
+    pub async fn into_trade_metadata<PT, T, P>(
         self,
-        rpc_provider: &RpcProvider,
-    ) -> Result<TradeMetadata<T>> {
+        rpc_provider: &RpcProvider<T, P>,
+    ) -> Result<TradeMetadata<PT>>
+    where
+        PT: ParseableTrade,
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static,
+    {
         let tx_hash = self.0.clone();
 
         // Wait for the tx to confirm or reject
@@ -52,4 +66,3 @@ impl Transaction {
             })
     }
 }
-

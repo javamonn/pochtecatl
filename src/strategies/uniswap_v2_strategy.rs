@@ -10,7 +10,7 @@ use alloy::primitives::Address;
 use eyre::Result;
 use fnv::FnvHashMap;
 
-pub trait UniswapV2Strategy {
+pub trait UniswapV2Strategy: Send + Sync + 'static {
     fn should_open_position(
         &self,
         uniswap_v2_pair: &IndexedUniswapV2Pair,

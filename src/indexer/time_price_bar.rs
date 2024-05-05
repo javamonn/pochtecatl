@@ -4,6 +4,7 @@ use alloy::primitives::BlockNumber;
 
 use fraction::{GenericFraction, ToPrimitive};
 use std::collections::BTreeMap;
+use tracing::warn;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimePriceBarData {
@@ -54,7 +55,7 @@ impl TimePriceBarData {
 
     pub fn close(&self) -> f64 {
         self.close.to_f64().unwrap_or_else(|| {
-            log::warn!(
+            warn!(
                 "Unable to derive close price for time price bar: {:?}",
                 self
             );
@@ -149,7 +150,7 @@ impl PendingTimePriceBar {
 
     pub fn close(&self) -> f64 {
         self.close.unwrap_or_else(|| {
-            log::warn!(
+            warn!(
                 "Unable to derive close price for time price bar: {:?}",
                 self
             );

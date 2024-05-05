@@ -1,10 +1,13 @@
 use super::UniswapV2Strategy;
 use crate::{
-    indexer::{IndexedUniswapV2Pair, Indicators, Resolution, ResolutionTimestamp, TimePriceBars, UniswapV2PairTrade},
+    indexer::{
+        IndexedUniswapV2Pair, Indicators, Resolution, ResolutionTimestamp, TimePriceBars,
+        UniswapV2PairTrade,
+    },
     trade_controller::TradeMetadata,
 };
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address};
 
 use eyre::{eyre, Result};
 use fnv::FnvHashMap;
@@ -89,10 +92,8 @@ impl UniswapV2Strategy for UniswapV2MomentumStrategy {
                 let has_crossed_sma = pair_time_price_bars
                     .data()
                     .range(
-                        ResolutionTimestamp::from_timestamp(
-                            *trade.block_timestamp(),
-                            resolution,
-                        )..=*timestamp,
+                        ResolutionTimestamp::from_timestamp(*trade.block_timestamp(), resolution)
+                            ..=*timestamp,
                     )
                     .any(|(_, time_price_bar)| match time_price_bar.indicators() {
                         Some(Indicators {

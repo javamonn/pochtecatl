@@ -9,7 +9,7 @@ use std::{env, ffi::OsStr, sync::Once};
 static DOTENV_INIT: Once = Once::new();
 
 fn get_env_var<K: AsRef<OsStr>>(k: K) -> Result<String, env::VarError> {
-    if cfg!(test) {
+    if cfg!(test) || cfg!(feature = "local") {
         DOTENV_INIT.call_once(|| {
             dotenvy::dotenv().expect(".env not found");
         });

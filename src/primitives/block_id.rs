@@ -1,6 +1,5 @@
 use eyre::{eyre, Report};
-use log::kv::ToValue;
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
 pub enum BlockId {
     Latest,
@@ -22,11 +21,11 @@ impl FromStr for BlockId {
     }
 }
 
-impl ToValue for BlockId {
-    fn to_value(&self) -> log::kv::Value {
+impl Display for BlockId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BlockId::Latest => log::kv::Value::from("latest"),
-            BlockId::BlockNumber(number) => log::kv::Value::from(number),
+            BlockId::Latest => write!(f, "latest"),
+            BlockId::BlockNumber(block_number) => write!(f, "{}", block_number),
         }
     }
 }
