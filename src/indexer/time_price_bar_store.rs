@@ -11,7 +11,7 @@ use alloy::{
 use eyre::{Context, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
-use tracing::warn;
+use tracing::{instrument, warn};
 
 // In a backfill we can finalize up to the last completed time bar resolution tick,
 // as we will never encounter a reorg. In peak, we can only finalize up to the

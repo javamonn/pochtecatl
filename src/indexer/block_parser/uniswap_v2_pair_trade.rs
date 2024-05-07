@@ -67,7 +67,6 @@ impl UniswapV2PairTrade {
 }
 
 impl ParseableTrade for UniswapV2PairTrade {
-    #[instrument(skip(logs))]
     fn parse_from_log(
         log: &Log,
         logs: &Vec<Log>,

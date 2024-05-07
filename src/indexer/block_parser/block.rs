@@ -47,13 +47,6 @@ impl Block {
         }
     }
 
-    #[instrument(
-        skip_all, 
-        fields(
-            block_number=header.number.map(|n| n.to_string()),
-            block_hash=header.hash.map(|h| h.to_string())
-        )
-    )]
     pub async fn parse<T, P>(
         rpc_provider: Arc<RpcProvider<T, P>>,
         header: &Header,

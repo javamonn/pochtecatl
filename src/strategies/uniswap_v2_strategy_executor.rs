@@ -15,8 +15,11 @@ use alloy::{
     transports::Transport,
 };
 use eyre::{eyre, Result};
-use std::sync::{mpsc::Receiver, Arc};
-use tokio::task::{JoinHandle, JoinSet};
+use std::sync::Arc;
+use tokio::{
+    sync::mpsc::Receiver,
+    task::{JoinHandle, JoinSet},
+};
 use tracing::{debug, error, info, instrument};
 
 const TARGET_PAIR_ADDRESS: Address = address!("377FeeeD4820B3B28D1ab429509e7A0789824fCA");
@@ -71,8 +74,6 @@ where
         trade_controller: Arc<TradeController<UniswapV2PairTrade, T, P>>,
     ) -> Result<()> {
         let mut pending_tx_tasks = JoinSet::new();
-
-        debug!("handle_indexed_block_message");
 
         // Execute core strategy logic
         {
@@ -187,8 +188,6 @@ where
             }
         }
 
-        debug!("awaiting pending tx tasks");
-
         // Await completion of all pending tx submissions
         while let Some(pending_tx_result) = pending_tx_tasks.join_next().await {
             let _ = pending_tx_result.inspect_err(|err| {
@@ -199,13 +198,10 @@ where
             });
         }
 
-        debug!("sending ack");
-
         // If message included an ack, trigger it
         if let Some(ack) = indexed_block_message.ack {
             ack.send(())
                 .map_err(|e| eyre!("Failed to send ack: {:?}", e))?;
-            debug!("sent ack");
         }
 
         Ok(())
@@ -218,13 +214,13 @@ where
     T: Transport + Clone,
     P: Provider<T, Ethereum>,
 {
-    fn exec(&mut self, indexed_block_message_receiver: Receiver<IndexedBlockMessage>) {
+    fn exec(&mut self, mut indexed_block_message_receiver: Receiver<IndexedBlockMessage>) {
         let time_price_bar_store = Arc::clone(&self.time_price_bar_store);
         let trade_controller = Arc::clone(&self.trade_controller);
         let strategy = Arc::clone(&self.strategy);
 
         let exec_handle = tokio::spawn(async move {
-            while let Ok(indexed_block_message) = indexed_block_message_receiver.recv() {
+            while let Some(indexed_block_message) = indexed_block_message_receiver.recv().await {
                 let trade_controller = Arc::clone(&trade_controller);
 
                 UniswapV2StrategyExecuctor::handle_indexed_block_message(
@@ -237,8 +233,6 @@ where
                 .inspect_err(|err| {
                     error!("handle_indexed_block_message error: {:?}", err);
                 })?;
-
-                debug!("handled indexed block message");
             }
 
             Ok(())
