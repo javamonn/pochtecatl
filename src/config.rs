@@ -47,6 +47,10 @@ lazy_static! {
                 .parse()
                 .wrap_err("Failed to parse UNISWAP_V2_ROUTER_02_ADDRESS"))
             .unwrap();
+    pub static ref MULTICALL3_ADDRESS: Address = get_env_var("MULTICALL3_ADDRESS")
+        .wrap_err("Failed to read MULTICALL3_ADDRESS from env")
+        .and_then(|a| a.parse().wrap_err("Failed to parse MULTICALL3_ADDRESS"))
+        .unwrap();
     pub static ref WALLET_PRIVATE_KEY: FixedBytes<32> =
         get_env_var("WALLET_PRIVATE_KEY")
             .wrap_err("Failed to read WALLET_PRIVATE_KEY from env")

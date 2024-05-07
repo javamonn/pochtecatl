@@ -14,12 +14,9 @@ use alloy::{
     providers::Provider,
     transports::Transport,
 };
-use eyre::{eyre, Result};
+use eyre::Result;
 use std::sync::Arc;
-use tokio::{
-    sync::mpsc::Receiver,
-    task::{JoinHandle, JoinSet},
-};
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument};
 
 const TARGET_PAIR_ADDRESS: Address = address!("377FeeeD4820B3B28D1ab429509e7A0789824fCA");
@@ -31,8 +28,6 @@ where
     P: Provider<T, Ethereum> + 'static,
 {
     strategy: Arc<S>,
-    exec_handle: Option<JoinHandle<Result<()>>>,
-    time_price_bar_store: Arc<TimePriceBarStore>,
     trade_controller: Arc<TradeController<UniswapV2PairTrade, T, P>>,
 }
 
@@ -43,41 +38,39 @@ where
     P: Provider<T, Ethereum>,
 {
     pub fn new(
-        time_price_bar_store: Arc<TimePriceBarStore>,
         trade_controller: Arc<TradeController<UniswapV2PairTrade, T, P>>,
         strategy: S,
     ) -> Self {
         Self {
-            exec_handle: None,
-            time_price_bar_store,
             trade_controller,
             strategy: Arc::new(strategy),
         }
     }
 
     pub fn with_momentum_strategy(
-        time_price_bar_store: Arc<TimePriceBarStore>,
         trade_controller: Arc<TradeController<UniswapV2PairTrade, T, P>>,
     ) -> UniswapV2StrategyExecuctor<UniswapV2MomentumStrategy, T, P> {
-        UniswapV2StrategyExecuctor::new(
-            time_price_bar_store,
-            trade_controller,
-            UniswapV2MomentumStrategy::new(),
-        )
+        UniswapV2StrategyExecuctor::new(trade_controller, UniswapV2MomentumStrategy::new())
     }
+}
 
-    #[instrument(skip_all, fields(block_number = indexed_block_message.block_number))]
-    async fn handle_indexed_block_message(
+impl<S, T, P> StrategyExecutor for UniswapV2StrategyExecuctor<S, T, P>
+where
+    S: UniswapV2Strategy,
+    T: Transport + Clone,
+    P: Provider<T, Ethereum>,
+{
+    #[instrument(skip_all, fields(block_number=indexed_block_message.block_number))]
+    async fn on_indexed_block_message(
+        &self,
         indexed_block_message: IndexedBlockMessage,
-        strategy: &S,
         time_price_bar_store: &TimePriceBarStore,
-        trade_controller: Arc<TradeController<UniswapV2PairTrade, T, P>>,
     ) -> Result<()> {
         let mut pending_tx_tasks = JoinSet::new();
 
         // Execute core strategy logic
         {
-            let trades = trade_controller.trades().0.read().unwrap();
+            let trades = self.trade_controller.trades().0.read().unwrap();
             let time_price_bars = time_price_bar_store.time_price_bars().read().unwrap();
 
             let resolution = time_price_bar_store.resolution();
@@ -96,7 +89,7 @@ where
                     .and_then(|address_trades| address_trades.active().as_ref())
                 {
                     None => {
-                        match strategy.should_open_position(
+                        match self.strategy.should_open_position(
                             &uniswap_v2_pair,
                             &timestamp,
                             &time_price_bars,
@@ -110,7 +103,7 @@ where
                                     indexed_block_message.block_number,
                                     indexed_block_message.block_timestamp,
                                 );
-                                let trade_controller = Arc::clone(&trade_controller);
+                                let trade_controller = Arc::clone(&self.trade_controller);
 
                                 pending_tx_tasks.spawn(async move {
                                     let _ =
@@ -133,117 +126,72 @@ where
                             }
                         }
                     }
-                    Some(Trade::Open(open_trade_metadata)) => match strategy.should_close_position(
-                        &uniswap_v2_pair,
-                        &timestamp,
-                        &resolution,
-                        &open_trade_metadata,
-                        &time_price_bars,
-                    ) {
-                        Ok(()) => {
-                            let open_token_amount =
-                                if uniswap_v2_pair.token_address < *config::WETH_ADDRESS {
-                                    // token0 is token, token1 is weth
-                                    open_trade_metadata.parsed_trade().amount0_out
-                                } else {
-                                    // token1 is token, token0 is weth
-                                    open_trade_metadata.parsed_trade().amount1_out
-                                };
+                    Some(Trade::Open(open_trade_metadata)) => {
+                        match self.strategy.should_close_position(
+                            &uniswap_v2_pair,
+                            &timestamp,
+                            &resolution,
+                            &open_trade_metadata,
+                            &time_price_bars,
+                        ) {
+                            Ok(()) => {
+                                let open_token_amount =
+                                    if uniswap_v2_pair.token_address < *config::WETH_ADDRESS {
+                                        // token0 is token, token1 is weth
+                                        open_trade_metadata.parsed_trade().amount0_out
+                                    } else {
+                                        // token1 is token, token0 is weth
+                                        open_trade_metadata.parsed_trade().amount1_out
+                                    };
 
-                            let close_position_request = UniswapV2CloseTradeRequest::new(
-                                uniswap_v2_pair.pair_address,
-                                uniswap_v2_pair.token_address,
-                                uniswap_v2_pair.weth_reserve,
-                                uniswap_v2_pair.token_reserve,
-                                open_token_amount,
-                                indexed_block_message.block_number,
-                                indexed_block_message.block_timestamp,
-                            );
+                                let close_position_request = UniswapV2CloseTradeRequest::new(
+                                    uniswap_v2_pair.pair_address,
+                                    uniswap_v2_pair.token_address,
+                                    uniswap_v2_pair.weth_reserve,
+                                    uniswap_v2_pair.token_reserve,
+                                    open_token_amount,
+                                    indexed_block_message.block_number,
+                                    indexed_block_message.block_timestamp,
+                                );
 
-                            let trade_controller = Arc::clone(&trade_controller);
+                                let trade_controller = Arc::clone(&self.trade_controller);
+                                pending_tx_tasks.spawn(async move {
+                                    let _ = trade_controller
+                                        .close_position(close_position_request)
+                                        .await;
 
-                            pending_tx_tasks.spawn(async move {
-                                let _ = trade_controller
-                                    .close_position(close_position_request)
-                                    .await;
-
-                                info!(
+                                    info!(
+                                        block_number = indexed_block_message.block_number,
+                                        pair_address = uniswap_v2_pair.pair_address.to_string(),
+                                        "executed close position"
+                                    );
+                                });
+                            }
+                            Err(err) => {
+                                debug!(
                                     block_number = indexed_block_message.block_number,
                                     pair_address = uniswap_v2_pair.pair_address.to_string(),
-                                    "executed close position"
+                                    "Skipping close position: {:?}",
+                                    err
                                 );
-                            });
+                            }
                         }
-                        Err(err) => {
-                            debug!(
-                                block_number = indexed_block_message.block_number,
-                                pair_address = uniswap_v2_pair.pair_address.to_string(),
-                                "Skipping close position: {:?}",
-                                err
-                            );
-                        }
-                    },
+                    }
                     _ => { /* noop */ }
                 };
             }
         }
 
         // Await completion of all pending tx submissions
-        while let Some(pending_tx_result) = pending_tx_tasks.join_next().await {
-            let _ = pending_tx_result.inspect_err(|err| {
-                error!(
-                    block_number = indexed_block_message.block_number,
-                    "join set execution error: {:?}", err
-                );
-            });
-        }
-
-        // If message included an ack, trigger it
-        if let Some(ack) = indexed_block_message.ack {
-            ack.send(())
-                .map_err(|e| eyre!("Failed to send ack: {:?}", e))?;
-        }
-
-        Ok(())
-    }
-}
-
-impl<S, T, P> StrategyExecutor for UniswapV2StrategyExecuctor<S, T, P>
-where
-    S: UniswapV2Strategy,
-    T: Transport + Clone,
-    P: Provider<T, Ethereum>,
-{
-    fn exec(&mut self, mut indexed_block_message_receiver: Receiver<IndexedBlockMessage>) {
-        let time_price_bar_store = Arc::clone(&self.time_price_bar_store);
-        let trade_controller = Arc::clone(&self.trade_controller);
-        let strategy = Arc::clone(&self.strategy);
-
-        let exec_handle = tokio::spawn(async move {
-            while let Some(indexed_block_message) = indexed_block_message_receiver.recv().await {
-                let trade_controller = Arc::clone(&trade_controller);
-
-                UniswapV2StrategyExecuctor::handle_indexed_block_message(
-                    indexed_block_message,
-                    strategy.as_ref(),
-                    time_price_bar_store.as_ref(),
-                    trade_controller,
-                )
-                .await
-                .inspect_err(|err| {
-                    error!("handle_indexed_block_message error: {:?}", err);
-                })?;
+        if !pending_tx_tasks.is_empty() {
+            while let Some(pending_tx_result) = pending_tx_tasks.join_next().await {
+                let _ = pending_tx_result.inspect_err(|err| {
+                    error!(
+                        block_number = indexed_block_message.block_number,
+                        "join set execution error: {:?}", err
+                    );
+                });
             }
-
-            Ok(())
-        });
-
-        self.exec_handle = Some(exec_handle);
-    }
-
-    async fn join(self) -> Result<()> {
-        if let Some(exec_handle) = self.exec_handle {
-            exec_handle.await??;
         }
 
         Ok(())

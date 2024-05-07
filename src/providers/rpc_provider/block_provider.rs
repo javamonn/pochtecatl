@@ -16,8 +16,7 @@ use std::{
     sync::{Arc, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::task::JoinSet;
-use tracing::error;
+use tracing::instrument;
 
 const BLOCK_CACHE_SIZE: usize = 100;
 
@@ -75,75 +74,7 @@ where
         Ok(block)
     }
 
-    pub async fn get_block_headers_by_range(
-        &self,
-        start_block_number: BlockNumber,
-        end_block_number: BlockNumber,
-    ) -> BTreeMap<BlockNumber, Option<Header>> {
-        let mut output = BTreeMap::new();
-
-        // Check cache for range headers
-        {
-            let read_cache = self.block_cache.read().unwrap();
-            for (k, v) in read_cache.range(start_block_number..=end_block_number) {
-                output.insert(*k, Some(v.header.clone()));
-            }
-        }
-
-        // Fetch missing blocks from rpc
-        let mut rpc_tasks = JoinSet::new();
-        for block_number in start_block_number..=end_block_number {
-            if output.get(&block_number).is_some() {
-                continue;
-            }
-
-            output.insert(block_number, None);
-
-            let inner = Arc::clone(&self.inner);
-            rpc_tasks.spawn(async move {
-                inner
-                    .get_block_by_number(block_number.into(), false)
-                    .await
-                    .unwrap_or_else(|err| {
-                        error!(
-                            block_number = block_number,
-                            "get_block_by_number failed: {:?}", err
-                        );
-                        None
-                    })
-                    .map(|block| (block_number, block))
-            });
-        }
-
-        while let Some(header) = rpc_tasks.join_next().await {
-            match header {
-                Ok(Some((block_number, block))) => {
-                    // Update the cache with the block
-                    {
-                        let mut write_cache = self.block_cache.write().unwrap();
-                        write_cache.insert(block_number, block.clone());
-                    }
-
-                    output.insert(block_number, Some(block.header));
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    error!("join_next error: {:?}", err);
-                }
-            }
-        }
-
-        // Trim cache if required
-        {
-            let mut write_cache = self.block_cache.write().unwrap();
-            while write_cache.len() > BLOCK_CACHE_SIZE + (BLOCK_CACHE_SIZE / 2) {
-                write_cache.pop_first();
-            }
-        }
-
-        output
-    }
-
+    #[instrument(skip(self))]
     pub async fn get_block_header(&self, block_number: BlockNumber) -> Result<Option<Header>> {
         self.get_block(block_number)
             .await

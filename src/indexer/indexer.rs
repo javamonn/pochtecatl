@@ -1,6 +1,6 @@
 use super::{Block, TimePriceBarStore};
 
-use crate::{config, providers::RpcProvider};
+use crate::{config, strategies::StrategyExecutor};
 
 use alloy::{
     network::Ethereum,
@@ -8,8 +8,9 @@ use alloy::{
     providers::Provider,
     transports::Transport,
 };
+use eyre::Result;
 use std::sync::Arc;
-use tokio::sync::{mpsc::Receiver, oneshot};
+use tokio::sync::oneshot;
 
 pub struct IndexedUniswapV2Pair {
     pub token_reserve: U256,
@@ -56,9 +57,8 @@ impl IndexedBlockMessage {
         }
     }
 
-    pub fn from_block_with_ack(block: &Block) -> (Self, oneshot::Receiver<()>) {
-        let (ack_sender, ack_receiver) = oneshot::channel();
-        let inst = Self::new(
+    pub fn from_block(block: &Block) -> Self {
+        Self::new(
             block.block_number,
             block.block_timestamp,
             block
@@ -83,20 +83,15 @@ impl IndexedBlockMessage {
                     None => None,
                 })
                 .collect(),
-            Some(ack_sender),
-        );
-
-        (inst, ack_receiver)
+            None,
+        )
     }
 }
 
-pub trait Indexer<T, P>
-where
-    T: Transport + Clone,
-    P: Provider<T, Ethereum> + 'static,
-{
-    fn subscribe(&mut self, rpc_provider: &Arc<RpcProvider<T, P>>)
-        -> Receiver<IndexedBlockMessage>;
+pub trait Indexer {
+    async fn exec<S>(&mut self, strategy_executor: S) -> Result<()>
+    where
+        S: StrategyExecutor + Send + 'static;
     fn time_price_bar_store(&self) -> Arc<TimePriceBarStore>;
 }
 
@@ -111,12 +106,14 @@ mod tests {
         rpc::types::eth::Filter,
         sol_types::SolEvent,
     };
-    use eyre::{OptionExt, Result};
+    use eyre::Result;
 
     #[tokio::test]
     pub async fn test_from_block_with_ack() -> Result<()> {
         let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
         let block_number = 12822402;
+        let block_timestamp = 100000;
+
         let logs_filter = Filter::new()
             .from_block(block_number)
             .to_block(block_number)
@@ -125,19 +122,9 @@ mod tests {
                 IUniswapV2Pair::Swap::SIGNATURE_HASH,
             ]);
 
-        let (header, logs) = {
-            let (header_result, logs_result) = tokio::join!(
-                rpc_provider.block_provider().get_block_header(block_number),
-                rpc_provider.get_logs(&logs_filter)
-            );
+        let logs = rpc_provider.get_logs(&logs_filter).await?;
 
-            (
-                header_result.and_then(|header| header.ok_or_eyre("Missing block"))?,
-                logs_result?,
-            )
-        };
-
-        let parsed_block = Block::parse(rpc_provider, &header, &logs).await?;
+        let parsed_block = Block::parse(rpc_provider, block_number, block_timestamp, &logs).await?;
 
         let (result, _) = IndexedBlockMessage::from_block_with_ack(&parsed_block);
 
