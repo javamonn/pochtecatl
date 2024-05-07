@@ -8,8 +8,8 @@ use alloy::{
     providers::Provider,
     transports::Transport,
 };
-use std::sync::{mpsc::Receiver, Arc};
-use tokio::sync::oneshot;
+use std::sync::Arc;
+use tokio::sync::{mpsc::Receiver, oneshot};
 
 pub struct IndexedUniswapV2Pair {
     pub token_reserve: U256,

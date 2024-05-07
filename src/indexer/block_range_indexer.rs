@@ -14,15 +14,11 @@ use alloy::{
 };
 
 use eyre::{Context, Result};
-use std::{
-    cmp::min,
-    collections::BTreeMap,
-    sync::{
-        mpsc::{sync_channel, Receiver, SyncSender},
-        Arc,
-    },
+use std::{cmp::min, collections::BTreeMap, sync::Arc};
+use tokio::{
+    sync::mpsc::{channel, Receiver, Sender},
+    task::{JoinHandle, JoinSet},
 };
-use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, instrument, warn};
 
 pub struct BlockRangeIndexer {
@@ -53,6 +49,7 @@ impl BlockRangeIndexer {
 
 const BLOCK_RANGE_STEP_BY: u64 = 100;
 
+#[instrument(skip(rpc_provider))]
 async fn get_parsed_blocks<T, P>(
     rpc_provider: Arc<RpcProvider<T, P>>,
     start_block_number: BlockNumber,
@@ -100,25 +97,20 @@ where
     let mut tasks = JoinSet::new();
     let mut output = BTreeMap::new();
     for block_number in start_block_number..=end_block_number {
-        match (
-            headers_by_block_number.remove(&block_number),
-            logs_by_block_number.remove(&block_number),
-        ) {
-            (Some(Some(block_header)), Some(block_logs)) => {
+        match headers_by_block_number.remove(&block_number).flatten() {
+            Some(block_header) => {
                 let rpc_provider = Arc::clone(&rpc_provider);
+                let block_logs = logs_by_block_number
+                    .remove(&block_number)
+                    .unwrap_or_default();
+
                 tasks.spawn(async move {
                     Block::parse(rpc_provider, &block_header, &block_logs)
                         .await
                         .wrap_err_with(|| format!("Block::parse failed for block {}", block_number))
                 });
             }
-            (_, None) => {
-                warn!(
-                    block_number = block_number,
-                    "Expected logs for block but found none"
-                );
-            }
-            (None, _) | (Some(None), _) => {
+            None => {
                 warn!(
                     block_number = block_number,
                     "Expected header for block but found none"
@@ -150,7 +142,7 @@ async fn index_blocks<T, P>(
     time_price_bar_store: Arc<TimePriceBarStore>,
     start_block_number: BlockNumber,
     end_block_number: BlockNumber,
-    indexed_block_message_sender: SyncSender<IndexedBlockMessage>,
+    indexed_block_message_sender: Sender<IndexedBlockMessage>,
 ) -> Result<()>
 where
     T: Transport + Clone,
@@ -171,32 +163,21 @@ where
         )
         .await?;
 
-        debug!(
-            range_start_block_number = range_start_block_number,
-            range_end_block_number = range_end_block_number,
-            "parsed blocks"
-        );
-
         for parsed_block in parsed_blocks.into_values() {
-            debug!(block_number = parsed_block.block_number, "inserting block");
-
             time_price_bar_store
                 .insert_block(Arc::clone(&rpc_provider), &parsed_block)
                 .await?;
 
-            debug!(block_number = parsed_block.block_number, "inserted block");
-
             let (indexed_block_message, ack_receiver) =
                 IndexedBlockMessage::from_block_with_ack(&parsed_block);
 
-            // sync channel will block until the receiver receives the message
-            indexed_block_message_sender.send(indexed_block_message)?;
+            indexed_block_message_sender
+                .send(indexed_block_message)
+                .await?;
 
             // because this is a backfill, we wait for the receiver to fully process
             // the indexed block
-            debug!("waiting for ack");
             ack_receiver.await?;
-            debug!("ack received");
         }
 
         debug!(
@@ -218,7 +199,7 @@ where
         &mut self,
         rpc_provider: &Arc<RpcProvider<T, P>>,
     ) -> Receiver<IndexedBlockMessage> {
-        let (indexed_block_message_sender, indexed_block_message_receiver) = sync_channel(0);
+        let (indexed_block_message_sender, indexed_block_message_receiver) = channel(1);
 
         let start_block_number = self.start_block_number;
         let end_block_number = self.end_block_number;
@@ -227,7 +208,7 @@ where
         let time_price_bar_store = Arc::clone(&self.time_price_bar_store);
 
         let index_handle = tokio::spawn(async move {
-            let res = index_blocks(
+            index_blocks(
                 rpc_provider,
                 time_price_bar_store,
                 start_block_number,
@@ -242,11 +223,7 @@ where
                     "index_blocks failed: {:?}",
                     err
                 );
-            });
-
-            debug!("index handle end");
-
-            res
+            })
         });
 
         self.index_handle = Some(index_handle);

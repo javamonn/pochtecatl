@@ -10,7 +10,7 @@ use indexer::BlockRangeIndexer;
 use primitives::BlockId;
 use providers::rpc_provider::new_http_signer_provider;
 use strategies::{StrategyExecutor, UniswapV2MomentumStrategy, UniswapV2StrategyExecuctor};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 use trade_controller::TradeController;
 
 use alloy::{network::Ethereum, providers::Provider, transports::Transport};
@@ -52,6 +52,7 @@ where
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_str(&config::RUST_LOG).unwrap_or_default())
+        .with_span_events(FmtSpan::CLOSE)
         .init();
 
     info!(
