@@ -1,20 +1,18 @@
-use super::{ParseableTrade, UniswapV2PairTrade};
+use super::{BlockBuilder, UniswapV2PairTrade};
 
 use crate::{config, providers::RpcProvider};
 
 use alloy::{
-    primitives::{Address, BlockHash, BlockNumber},
-    rpc::types::eth::{Header, Log},
-    transports::Transport,
     network::Ethereum,
+    primitives::{Address, BlockHash, BlockNumber},
     providers::Provider,
+    rpc::types::eth::Log,
+    transports::Transport,
 };
 
-use eyre::{eyre, Result};
+use eyre::Result;
 use fnv::FnvHashMap;
 use std::sync::Arc;
-use tokio::task::JoinSet;
-use tracing::{error, instrument, warn};
 
 pub struct UniswapV2Pair {
     pub token_address: Address,
@@ -31,14 +29,18 @@ impl UniswapV2Pair {
 }
 
 pub struct Block {
-    pub block_hash: BlockHash,
+    pub block_hash: Option<BlockHash>,
     pub block_number: BlockNumber,
     pub block_timestamp: u64,
     pub uniswap_v2_pairs: FnvHashMap<Address, UniswapV2Pair>,
 }
 
 impl Block {
-    pub fn new(block_hash: BlockHash, block_number: BlockNumber, block_timestamp: u64) -> Self {
+    pub fn new(
+        block_hash: Option<BlockHash>,
+        block_number: BlockNumber,
+        block_timestamp: u64,
+    ) -> Self {
         Self {
             block_hash,
             block_number,
@@ -47,130 +49,44 @@ impl Block {
         }
     }
 
+    pub fn add_uniswap_v2_pair_trade(
+        &mut self,
+        pair_address: Address,
+        trade: UniswapV2PairTrade,
+        token0_address: &Address,
+        token1_address: &Address,
+    ) {
+        let token_address = if *token0_address == *config::WETH_ADDRESS {
+            Some(token1_address)
+        } else if *token1_address == *config::WETH_ADDRESS {
+            Some(token0_address)
+        } else {
+            None
+        };
+
+        if let Some(token_address) = token_address {
+            let uniswap_v2_pair = self
+                .uniswap_v2_pairs
+                .entry(pair_address)
+                .or_insert_with(|| UniswapV2Pair::new(*token_address, Vec::new()));
+            uniswap_v2_pair.trades.push(trade);
+        }
+    }
+
     pub async fn parse<T, P>(
         rpc_provider: Arc<RpcProvider<T, P>>,
-        header: &Header,
+        block_number: BlockNumber,
+        block_timestamp: u64,
         logs: &Vec<Log>,
-    ) -> Result<Self> 
+    ) -> Result<Self>
     where
         T: Transport + Clone,
-        P: Provider<T, Ethereum> + 'static
+        P: Provider<T, Ethereum> + 'static,
     {
-        let mut uniswap_v2_pairs = Vec::new();
-        for (idx, log) in logs.iter().enumerate() {
-            // Try to parse a uniswap v2 trade
-            if let Some(uniswap_v2_pair_trade) = UniswapV2PairTrade::parse_from_log(log, logs, idx)
-            {
-                uniswap_v2_pairs.push((log.address(), uniswap_v2_pair_trade));
-            }
-        }
-
-        let uniswap_v2_pair_token_addresses = get_block_uniswap_v2_pair_token_addresses(
-            rpc_provider,
-            uniswap_v2_pairs
-                .iter()
-                .map(|(pair_address, _)| *pair_address),
-        )
-        .await;
-
-        let block: Block = uniswap_v2_pairs.into_iter().fold(
-            header.try_into()?,
-            |mut block, (pair_address, trade)| {
-                match uniswap_v2_pair_token_addresses.get(&pair_address) {
-                    Some((token0_address, token1_address)) => {
-                        let token_address = if *token0_address == *config::WETH_ADDRESS {
-                            Some(*token1_address)
-                        } else if *token1_address == *config::WETH_ADDRESS {
-                            Some(*token0_address)
-                        } else {
-                            None
-                        };
-
-                        if let Some(token_address) = token_address {
-                            let uniswap_v2_pair = block
-                                .uniswap_v2_pairs
-                                .entry(pair_address)
-                                .or_insert_with(|| UniswapV2Pair::new(token_address, Vec::new()));
-                            uniswap_v2_pair.trades.push(trade);
-                        }
-                    }
-                    None => {
-                        warn!(
-                            pair_address = pair_address.to_string(),
-                            "failed to get pair token addresses",
-                        );
-                    }
-                }
-
-                block
-            },
-        );
-
-        Ok(block)
+        BlockBuilder::new(block_number, block_timestamp, logs)
+            .build(rpc_provider)
+            .await
     }
-}
-
-impl TryFrom<&Header> for Block {
-    type Error = eyre::Report;
-
-    fn try_from(header: &Header) -> Result<Self, Self::Error> {
-        match (header.hash, header.number) {
-            (None, _) => Err(eyre!("header is missing hash")),
-            (_, None) => Err(eyre!("header is missing number")),
-            (Some(hash), Some(number)) => Ok(Block::new(
-                hash,
-                number.to::<u64>(),
-                header.timestamp.to::<u64>(),
-            )),
-        }
-    }
-}
-
-async fn get_block_uniswap_v2_pair_token_addresses<I, T, P>(
-    rpc_provider: Arc<RpcProvider<T, P>>,
-    pair_addresses: I,
-) -> FnvHashMap<Address, (Address, Address)>
-where
-    I: Iterator<Item = Address>,
-    T: Transport + Clone,
-    P: Provider<T, Ethereum> + 'static,
-{
-    let mut tasks = JoinSet::new();
-    let mut output = FnvHashMap::default();
-
-    for pair_address in pair_addresses {
-        let rpc_provider = Arc::clone(&rpc_provider);
-        tasks.spawn(async move {
-            match rpc_provider
-                .uniswap_v2_pair_provider()
-                .get_uniswap_v2_pair_token_addresses(pair_address)
-                .await
-            {
-                Ok(token_addresses) => Some((pair_address, token_addresses)),
-                Err(err) => {
-                    error!(
-                        pair_address = pair_address.to_string(),
-                        "get_uniswap_v2_pair_token_addresses failed: {:?}", err
-                    );
-                    None
-                }
-            }
-        });
-    }
-
-    while let Some(pair_token_addresses) = tasks.join_next().await {
-        match pair_token_addresses {
-            Ok(Some((pair_address, token_addresses))) => {
-                output.insert(pair_address, token_addresses);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                error!("join_next error: {:?}", err);
-            }
-        }
-    }
-
-    output
 }
 
 #[cfg(test)]
@@ -187,13 +103,14 @@ mod tests {
         rpc::types::eth::Filter,
         sol_types::SolEvent,
     };
-    use eyre::OptionExt;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_parse() -> eyre::Result<()> {
         let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
         let block_number = 12822402;
+        let mock_timestamp = 100000;
+
         let logs_filter = Filter::new()
             .from_block(block_number)
             .to_block(block_number)
@@ -202,22 +119,12 @@ mod tests {
                 IUniswapV2Pair::Swap::SIGNATURE_HASH,
             ]);
 
-        let (header, logs) = {
-            let (header_result, logs_result) = tokio::join!(
-                rpc_provider.block_provider().get_block_header(block_number),
-                rpc_provider.get_logs(&logs_filter)
-            );
+        let logs = rpc_provider.get_logs(&logs_filter).await?;
 
-            (
-                header_result.and_then(|header| header.ok_or_eyre("Missing block"))?,
-                logs_result?,
-            )
-        };
-
-        let parsed_block = Block::parse(rpc_provider, &header, &logs).await?;
+        let parsed_block = Block::parse(rpc_provider, block_number, mock_timestamp, &logs).await?;
 
         assert_eq!(parsed_block.block_number, block_number);
-        assert_eq!(parsed_block.block_timestamp, 1712434151);
+        assert_eq!(parsed_block.block_timestamp, mock_timestamp);
         assert_eq!(parsed_block.uniswap_v2_pairs.len(), 4);
 
         let pair = parsed_block

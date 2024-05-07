@@ -7,7 +7,7 @@ use crate::{
     trade_controller::TradeMetadata,
 };
 
-use alloy::primitives::{Address};
+use alloy::primitives::Address;
 
 use eyre::{eyre, Result};
 use fnv::FnvHashMap;

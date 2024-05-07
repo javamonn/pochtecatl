@@ -11,7 +11,8 @@ use alloy::{
 use eyre::{Context, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
-use tracing::{instrument, warn};
+use tracing::warn;
+use tracing::instrument;
 
 // In a backfill we can finalize up to the last completed time bar resolution tick,
 // as we will never encounter a reorg. In peak, we can only finalize up to the
@@ -100,6 +101,7 @@ impl TimePriceBarStore {
         *self.last_finalized_timestamp.read().unwrap()
     }
 
+    #[instrument(skip_all, fields(block_number = block.block_number))]
     pub async fn insert_block<T, P>(
         &self,
         rpc_provider: Arc<RpcProvider<T, P>>,
@@ -296,7 +298,13 @@ mod tests {
             )
         };
 
-        Block::parse(rpc_provider, &header, &logs).await
+        Block::parse(
+            rpc_provider,
+            block_number,
+            header.timestamp.to::<u64>(),
+            &logs,
+        )
+        .await
     }
 
     #[tokio::test]

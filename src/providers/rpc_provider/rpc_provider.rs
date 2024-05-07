@@ -18,8 +18,8 @@ use alloy::{
 };
 
 use eyre::{eyre, Result, WrapErr};
-
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct RpcProvider<T: Transport + Clone, P: Provider<T, Ethereum>> {
     signer_address: Address,
@@ -103,6 +103,7 @@ where
             .wrap_err("send_transaction failed")
     }
 
+    #[instrument(skip(self))]
     pub async fn get_logs(&self, filter: &Filter) -> TransportResult<Vec<Log>> {
         self.inner.get_logs(filter).await
     }

@@ -8,7 +8,6 @@ use alloy::{
 };
 
 use fraction::GenericFraction;
-use tracing::instrument;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct UniswapV2PairTrade {

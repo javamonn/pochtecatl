@@ -1,9 +1,11 @@
-use crate::indexer::IndexedBlockMessage;
+use crate::indexer::{IndexedBlockMessage, TimePriceBarStore};
 
 use eyre::Result;
-use tokio::sync::mpsc::Receiver;
 
 pub trait StrategyExecutor {
-    fn exec(&mut self, indexed_block_message_receiver: Receiver<IndexedBlockMessage>);
-    async fn join(self) -> Result<()>;
+    fn on_indexed_block_message(
+        &self,
+        indexed_block_message: IndexedBlockMessage,
+        time_price_bar_store: &TimePriceBarStore,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
