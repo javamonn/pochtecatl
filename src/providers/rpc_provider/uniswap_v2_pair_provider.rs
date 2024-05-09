@@ -76,6 +76,7 @@ where
         }
 
         let res = multicall(Arc::clone(&self.inner), calls, block_id).await?;
+
         {
             let mut token_addresses_cache = self.token_addresses_cache.lock().unwrap();
             res.chunks_exact(2)

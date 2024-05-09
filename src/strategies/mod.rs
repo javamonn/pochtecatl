@@ -1,11 +1,12 @@
 pub use strategy_executor::StrategyExecutor;
-pub use uniswap_v2_momentum_strategy::UniswapV2MomentumStrategy;
-pub use uniswap_v2_strategy::UniswapV2Strategy;
-pub use uniswap_v2_strategy_executor::UniswapV2StrategyExecuctor;
+pub use momentum_strategy::MomentumStrategy;
+pub use strategy::Strategy;
 
 // traits
-mod strategy_executor;
-mod uniswap_v2_strategy;
+mod strategy;
 
-mod uniswap_v2_momentum_strategy;
-mod uniswap_v2_strategy_executor;
+
+mod strategy_executor;
+mod uniswap_v2_dex_provider;
+
+mod momentum_strategy;

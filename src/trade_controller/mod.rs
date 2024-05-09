@@ -1,21 +1,14 @@
-pub use trade::{Trade, TradeMetadata};
-pub use trade_controller::TradeController;
-pub use address_trades::AddressTrades;
-pub use trades::Trades;
+pub use trade_controller::{TradeController, TradeControllerRequest};
+pub use trade_metadata::{TradeMetadata, ParsedTrade};
+pub use trades::{AddressTrades, Trade, Trades};
 
-pub use trade_request::TradeRequest;
+pub use trade_request::{TradeRequest, TradeRequestIntent, UniswapV2TradeRequest};
 pub use transaction::Transaction;
 
-pub use uniswap_v2_close_trade_request::UniswapV2CloseTradeRequest;
-pub use uniswap_v2_open_trade_request::UniswapV2OpenTradeRequest;
-
 mod backtest_util;
-mod trade;
 mod trade_controller;
-mod address_trades;
+mod trade_metadata;
 mod trades;
 
 mod trade_request;
 mod transaction;
-mod uniswap_v2_close_trade_request;
-mod uniswap_v2_open_trade_request;

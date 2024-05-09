@@ -1,6 +1,7 @@
-use super::{uniswap_v2_pair_swap_log, uniswap_v2_pair_sync_log, ParseableTrade};
-
-use crate::config;
+use crate::{
+    config,
+    indexer::block_parser::{uniswap_v2_pair_swap_log, uniswap_v2_pair_sync_log},
+};
 
 use alloy::{
     primitives::{Address, U256},
@@ -8,8 +9,9 @@ use alloy::{
 };
 
 use fraction::GenericFraction;
+use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UniswapV2PairTrade {
     pub amount0_in: U256,
     pub amount1_in: U256,
@@ -41,32 +43,7 @@ impl UniswapV2PairTrade {
         }
     }
 
-    pub fn get_price_before(&self, token_address: &Address) -> GenericFraction<u128> {
-        let reserve0_before = self.reserve0 - self.amount0_in + self.amount0_out;
-        let reserve1_before = self.reserve1 - self.amount1_in + self.amount1_out;
-
-        if *token_address < *config::WETH_ADDRESS {
-            // token0 is token, token1 is weth
-            GenericFraction::new(reserve1_before.to::<u128>(), reserve0_before.to::<u128>())
-        } else {
-            // token0 is weth, token1 is token
-            GenericFraction::new(reserve0_before.to::<u128>(), reserve1_before.to::<u128>())
-        }
-    }
-
-    pub fn get_price_after(&self, token_address: &Address) -> GenericFraction<u128> {
-        if *token_address < *config::WETH_ADDRESS {
-            // token0 is token, token1 is weth
-            GenericFraction::new(self.reserve1.to::<u128>(), self.reserve0.to::<u128>())
-        } else {
-            // token0 is weth, token1 is token
-            GenericFraction::new(self.reserve0.to::<u128>(), self.reserve1.to::<u128>())
-        }
-    }
-}
-
-impl ParseableTrade for UniswapV2PairTrade {
-    fn parse_from_log(
+    pub fn try_parse_from_log(
         log: &Log,
         logs: &Vec<Log>,
         relative_log_idx: usize,
@@ -102,5 +79,28 @@ impl ParseableTrade for UniswapV2PairTrade {
                     )
                 })
         })
+    }
+
+    pub fn get_price_before(&self, token_address: &Address) -> GenericFraction<u128> {
+        let reserve0_before = self.reserve0 - self.amount0_in + self.amount0_out;
+        let reserve1_before = self.reserve1 - self.amount1_in + self.amount1_out;
+
+        if *token_address < *config::WETH_ADDRESS {
+            // token0 is token, token1 is weth
+            GenericFraction::new(reserve1_before.to::<u128>(), reserve0_before.to::<u128>())
+        } else {
+            // token0 is weth, token1 is token
+            GenericFraction::new(reserve0_before.to::<u128>(), reserve1_before.to::<u128>())
+        }
+    }
+
+    pub fn get_price_after(&self, token_address: &Address) -> GenericFraction<u128> {
+        if *token_address < *config::WETH_ADDRESS {
+            // token0 is token, token1 is weth
+            GenericFraction::new(self.reserve1.to::<u128>(), self.reserve0.to::<u128>())
+        } else {
+            // token0 is weth, token1 is token
+            GenericFraction::new(self.reserve0.to::<u128>(), self.reserve1.to::<u128>())
+        }
     }
 }

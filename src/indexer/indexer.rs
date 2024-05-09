@@ -1,12 +1,12 @@
-use super::{Block, TimePriceBarStore};
+use super::TimePriceBarStore;
 
-use crate::{config, strategies::StrategyExecutor};
+use crate::{config, primitives::Block, strategies::StrategyExecutor};
 
 use alloy::{
-    network::Ethereum,
     primitives::{Address, BlockNumber, U256},
-    providers::Provider,
     transports::Transport,
+    network::Ethereum,
+    providers::Provider,
 };
 use eyre::Result;
 use std::sync::Arc;
@@ -88,18 +88,22 @@ impl IndexedBlockMessage {
     }
 }
 
-pub trait Indexer {
-    async fn exec<S>(&mut self, strategy_executor: S) -> Result<()>
-    where
-        S: StrategyExecutor + Send + 'static;
-    fn time_price_bar_store(&self) -> Arc<TimePriceBarStore>;
+pub trait Indexer<T, P>
+where
+    T: Transport + Clone,
+    P: Provider<T, Ethereum> + 'static,
+{
+    async fn exec(&mut self, strategy_executor: StrategyExecutor<T, P>) -> Result<()>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::{abi::IUniswapV2Pair, providers::rpc_provider::new_http_signer_provider};
+    use crate::{
+        abi::IUniswapV2Pair, indexer::BlockBuilder,
+        providers::rpc_provider::new_http_signer_provider,
+    };
 
     use alloy::{
         primitives::{address, uint},
@@ -109,7 +113,7 @@ mod tests {
     use eyre::Result;
 
     #[tokio::test]
-    pub async fn test_from_block_with_ack() -> Result<()> {
+    pub async fn test_from_block() -> Result<()> {
         let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
         let block_number = 12822402;
         let block_timestamp = 100000;
@@ -124,9 +128,11 @@ mod tests {
 
         let logs = rpc_provider.get_logs(&logs_filter).await?;
 
-        let parsed_block = Block::parse(rpc_provider, block_number, block_timestamp, &logs).await?;
+        let parsed_block = BlockBuilder::new(block_number, block_timestamp, &logs)
+            .build(&rpc_provider)
+            .await?;
 
-        let (result, _) = IndexedBlockMessage::from_block_with_ack(&parsed_block);
+        let result = IndexedBlockMessage::from_block(&parsed_block);
 
         assert_eq!(result.block_number, block_number);
         assert_eq!(result.uniswap_v2_pairs.len(), 4);

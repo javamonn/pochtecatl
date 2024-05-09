@@ -1,5 +1,5 @@
-use super::{Block, BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars};
-use crate::providers::RpcProvider;
+use super::{BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars};
+use crate::{config, primitives::Block, providers::RpcProvider};
 
 use alloy::{
     network::Ethereum,
@@ -12,63 +12,15 @@ use eyre::{Context, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
 use tracing::warn;
-use tracing::instrument;
-
-// In a backfill we can finalize up to the last completed time bar resolution tick,
-// as we will never encounter a reorg. In peak, we can only finalize up to the
-// actual finalized block.
-async fn get_timestamp_range_to_finalize<T, P>(
-    rpc_provider: &RpcProvider<T, P>,
-    inserted_block_resolution_timestamp: &ResolutionTimestamp,
-    last_finalized_timestamp: &Option<ResolutionTimestamp>,
-    resolution: &Resolution,
-    is_backtest: bool,
-) -> Option<(ResolutionTimestamp, ResolutionTimestamp)>
-where
-    T: Transport + Clone,
-    P: Provider<T, Ethereum> + 'static,
-{
-    let end_finalized_timestamp = if is_backtest {
-        inserted_block_resolution_timestamp.previous(&resolution)
-    } else {
-        match rpc_provider
-            .block_provider()
-            .get_finalized_block_header()
-            .await
-        {
-            Ok(finalized_block_header) => ResolutionTimestamp::from_timestamp(
-                finalized_block_header.timestamp.to::<u64>(),
-                &resolution,
-            ),
-            Err(e) => {
-                warn!("Failed to get finalized block header: {}", e);
-                return None;
-            }
-        }
-    };
-
-    match last_finalized_timestamp {
-        Some(last_finalized_timestamp) => {
-            if end_finalized_timestamp > *last_finalized_timestamp {
-                Some((
-                    last_finalized_timestamp.next(&resolution),
-                    end_finalized_timestamp,
-                ))
-            } else {
-                None
-            }
-        }
-        None => Some((ResolutionTimestamp::zero(), end_finalized_timestamp)),
-    }
-}
 
 pub struct TimePriceBarStore {
     resolution: Resolution,
     time_price_bars: RwLock<FnvHashMap<Address, TimePriceBars>>,
-    last_finalized_timestamp: RwLock<Option<ResolutionTimestamp>>,
-    last_inserted_block_number: RwLock<Option<BlockNumber>>,
     retention_count: u64,
     is_backtest: bool,
+
+    last_inserted_block_number: RwLock<Option<BlockNumber>>,
+    last_pruned_at_block_number: RwLock<Option<BlockNumber>>,
 }
 
 impl TimePriceBarStore {
@@ -76,10 +28,10 @@ impl TimePriceBarStore {
         Self {
             resolution,
             time_price_bars: RwLock::new(FnvHashMap::default()),
-            last_finalized_timestamp: RwLock::new(None),
-            last_inserted_block_number: RwLock::new(None),
             retention_count,
             is_backtest,
+            last_inserted_block_number: RwLock::new(None),
+            last_pruned_at_block_number: RwLock::new(None),
         }
     }
 
@@ -96,12 +48,6 @@ impl TimePriceBarStore {
         *self.last_inserted_block_number.read().unwrap()
     }
 
-    #[cfg(test)]
-    pub fn last_finalized_timestamp(&self) -> Option<ResolutionTimestamp> {
-        *self.last_finalized_timestamp.read().unwrap()
-    }
-
-    #[instrument(skip_all, fields(block_number = block.block_number))]
     pub async fn insert_block<T, P>(
         &self,
         rpc_provider: Arc<RpcProvider<T, P>>,
@@ -114,45 +60,35 @@ impl TimePriceBarStore {
         let block_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(block.block_timestamp, &self.resolution);
 
-        let last_finalized_timestamp = self.last_finalized_timestamp.read().unwrap().clone();
-        let finalize_timestamp_range = get_timestamp_range_to_finalize(
-            &rpc_provider,
-            &block_resolution_timestamp,
-            &last_finalized_timestamp,
-            &self.resolution,
-            self.is_backtest,
-        )
-        .await;
-
-        let block_price_bars = block.uniswap_v2_pairs.iter().fold(
-            FnvHashMap::with_capacity_and_hasher(block.uniswap_v2_pairs.len(), Default::default()),
-            |mut acc, (pair_address, pair)| {
-                match BlockPriceBar::from_uniswap_v2_pair(pair) {
-                    Some(block_price_bar) => acc.insert(*pair_address, block_price_bar),
-                    None => {
-                        warn!(
-                            block_number = block.block_number,
-                            pair_address = pair_address.to_string(),
-                            "Failed to create block_price_bar for pair"
-                        );
-
-                        None
-                    }
-                };
-
-                acc
-            },
-        );
+        // The resolution timestamp of the time price bar containing the most recent
+        // finalized block. A TimePriceBars collection can safely finalize any time
+        // price bars up to this timestamp.
+        let finalized_timestamp = if self.is_backtest {
+            Some(block_resolution_timestamp.previous(&self.resolution))
+        } else {
+            rpc_provider
+                .block_provider()
+                .get_finalized_block_header()
+                .await
+                .inspect_err(|err| warn!("Failed to get finalized block header: {:?}", err))
+                .ok()
+                .map(|finalized_block_header| {
+                    ResolutionTimestamp::from_timestamp(
+                        finalized_block_header.timestamp.to::<u64>(),
+                        &self.resolution,
+                    )
+                    .previous(&self.resolution)
+                })
+        };
 
         // Insert the new block price bars
         {
             let mut time_price_bars = self.time_price_bars.write().unwrap();
 
-            // If this block is behind the last inserted block number, this is a reorg and we need to
-            // prune existing data
+            // If this block is behind the last inserted block number, this is a reorg
+            // and we need to prune existing data
             {
                 let last_inserted_block_number = self.last_inserted_block_number.read().unwrap();
-
                 match *last_inserted_block_number {
                     Some(last_inserted_block_number)
                         if block.block_number <= last_inserted_block_number =>
@@ -176,63 +112,66 @@ impl TimePriceBarStore {
             }
 
             // Insert new BlockPriceBar items into time_price_bars
-            for (pair_address, block_price_bar) in block_price_bars.iter() {
-                let time_price_bars = time_price_bars
-                    .entry(pair_address.clone())
-                    .or_insert_with(|| TimePriceBars::new(self.retention_count, self.resolution));
+            for (pair_address, pair) in block.uniswap_v2_pairs.iter() {
+                if let Some(block_price_bar) = BlockPriceBar::from_uniswap_v2_pair(pair) {
+                    let time_price_bars = time_price_bars
+                        .entry(pair_address.clone())
+                        .or_insert_with(|| {
+                            TimePriceBars::new(self.retention_count, self.resolution)
+                        });
 
-                time_price_bars
-                    .insert_data(
-                        block_resolution_timestamp.clone(),
-                        block.block_number,
-                        block_price_bar.clone().into(),
-                    )
-                    .wrap_err_with(|| {
-                        format!(
-                            "Failed to insert new block price bar for pair {}",
-                            pair_address
+                    time_price_bars
+                        .insert_data(
+                            block.block_number,
+                            block_price_bar.into(),
+                            block.block_timestamp,
+                            finalized_timestamp,
                         )
-                    })?;
-            }
-
-            // Perform maintenance on all price time bars to account for the newly inserted block
-            let mut stale_pair_addresses = Vec::new();
-            for (pair_address, pair_time_price_bars) in time_price_bars.iter_mut() {
-                // Carry forward previous BlockPriceBar items for any pairs without new items in
-                // this block
-                if !block_price_bars.contains_key(pair_address) {
-                    pair_time_price_bars
-                        .pad_for_block(&block.block_number, &block_resolution_timestamp)
                         .wrap_err_with(|| {
                             format!(
-                                "pad_time_price_bars_for_block failed for pair {}",
+                                "Failed to insert new block price bar for pair {}",
                                 pair_address
                             )
                         })?
                 }
-
-                // Prune the time price bars if they have not had a non-padded bar inserted
-                // recently (i.e. they're a dead pair)
-                if pair_time_price_bars.is_stale() {
-                    stale_pair_addresses.push(pair_address.clone());
-                }
-
-                // Finalize any time price bars in finalize range
-                if let Some((start_timestamp, end_timestamp)) = &finalize_timestamp_range {
-                    pair_time_price_bars.finalize_range(start_timestamp, end_timestamp)?;
-                }
             }
 
-            // Prune any stale pair addresses
-            for pair_address in stale_pair_addresses.into_iter() {
-                time_price_bars.remove(&pair_address);
-            }
-        }
+            // Prune any stale time price bars
+            {
+                let mut last_pruned_at_block_number =
+                    self.last_pruned_at_block_number.write().unwrap();
+                match last_pruned_at_block_number.as_ref() {
+                    Some(last_pruned_at_block_number_value)
+                        if block.block_number
+                            > last_pruned_at_block_number_value
+                                + (self.resolution.offset()
+                                    / *config::AVERAGE_BLOCK_TIME_SECONDS) =>
+                    {
+                        // Prune time price bars
+                        let stale_pair_addresses = time_price_bars
+                            .iter()
+                            .filter_map(|(pair_address, pair_time_price_bars)| {
+                                if pair_time_price_bars.is_stale(block_resolution_timestamp) {
+                                    Some(pair_address.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<Address>>();
 
-        // Update the last finalized timestamp if required
-        if let Some((_, end_timestamp)) = &finalize_timestamp_range {
-            let mut last_finalized_timestamp = self.last_finalized_timestamp.write().unwrap();
-            *last_finalized_timestamp = Some(end_timestamp.clone());
+                        for pair_address in stale_pair_addresses.into_iter() {
+                            time_price_bars.remove(&pair_address);
+                        }
+
+                        last_pruned_at_block_number.replace(block.block_number);
+                    }
+                    None => {
+                        // Set initial last pruned at to the current block number
+                        last_pruned_at_block_number.replace(block.block_number);
+                    }
+                    Some(_) => { /* noop: we do not need to prune yet */ }
+                }
+            }
         }
 
         // Update the last inserted block number
@@ -247,15 +186,16 @@ impl TimePriceBarStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::Block, get_timestamp_range_to_finalize, TimePriceBarStore};
+    use super::TimePriceBarStore;
     use crate::{
         abi::IUniswapV2Pair,
         config,
-        indexer::{Resolution, ResolutionTimestamp},
+        indexer::{Resolution, ResolutionTimestamp, BlockBuilder},
         providers::{
             rpc_provider::{new_http_signer_provider, TTLCache},
             RpcProvider,
         },
+        primitives::Block
     };
 
     use alloy::{
@@ -298,130 +238,9 @@ mod tests {
             )
         };
 
-        Block::parse(
-            rpc_provider,
-            block_number,
-            header.timestamp.to::<u64>(),
-            &logs,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn test_get_timestamp_range_to_finalize_backtest() -> Result<()> {
-        let rpc_provider = new_http_signer_provider(&config::RPC_URL, None).await?;
-        let base_finalized_timestamp =
-            ResolutionTimestamp::from_timestamp(10000, &Resolution::FiveMinutes);
-
-        let initial_finalize_range = get_timestamp_range_to_finalize(
-            &rpc_provider,
-            &base_finalized_timestamp,
-            &None,
-            &Resolution::FiveMinutes,
-            true,
-        )
-        .await
-        .expect("Expected initial_finalize_range, but found None");
-
-        assert_eq!(
-            initial_finalize_range,
-            (
-                ResolutionTimestamp::zero(),
-                base_finalized_timestamp.previous(&Resolution::FiveMinutes)
-            )
-        );
-
-        let last_finalized_timestamp =
-            ResolutionTimestamp::from_timestamp(1800_u64, &Resolution::FiveMinutes);
-        let finalize_range = get_timestamp_range_to_finalize(
-            &rpc_provider,
-            &base_finalized_timestamp,
-            &Some(last_finalized_timestamp),
-            &Resolution::FiveMinutes,
-            true,
-        )
-        .await
-        .expect("Expected finalize_range, but found None");
-
-        assert_eq!(
-            finalize_range,
-            (
-                last_finalized_timestamp.next(&Resolution::FiveMinutes),
-                base_finalized_timestamp.previous(&Resolution::FiveMinutes)
-            )
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_timestamp_range_to_finalize_peak() -> Result<()> {
-        let mock_finalized_timestamp = uint!(1000_U256);
-        let rpc_provider = {
-            let inner = new_http_signer_provider(&config::RPC_URL, None).await?;
-            let mock_finalized_block_number = 12822402;
-            let mut mock_finalized_header = inner
-                .block_provider()
-                .get_block_header(mock_finalized_block_number)
-                .await?
-                .expect("Expected block header, but found None");
-
-            mock_finalized_header.timestamp = mock_finalized_timestamp.clone();
-
-            Arc::new(
-                new_http_signer_provider(
-                    &config::RPC_URL,
-                    Some(TTLCache::new(mock_finalized_header, None)),
-                )
-                .await?,
-            )
-        };
-
-        let initial_finalize_range = get_timestamp_range_to_finalize(
-            &rpc_provider,
-            &ResolutionTimestamp::zero(),
-            &None,
-            &Resolution::FiveMinutes,
-            false,
-        )
-        .await
-        .expect("Expected initial_finalize_range, but found None");
-
-        assert_eq!(
-            initial_finalize_range,
-            (
-                ResolutionTimestamp::zero(),
-                ResolutionTimestamp::from_timestamp(
-                    mock_finalized_timestamp.to::<u64>(),
-                    &Resolution::FiveMinutes
-                )
-            )
-        );
-
-        let last_finalized_timestamp =
-            ResolutionTimestamp::from_timestamp(600_u64, &Resolution::FiveMinutes);
-        let finalize_range = get_timestamp_range_to_finalize(
-            &rpc_provider,
-            &ResolutionTimestamp::zero(),
-            &Some(last_finalized_timestamp),
-            &Resolution::FiveMinutes,
-            false,
-        )
-        .await
-        .expect("Expected finalize_range, but found None");
-
-        assert_eq!(
-            finalize_range,
-            (
-                last_finalized_timestamp.next(&Resolution::FiveMinutes),
-                ResolutionTimestamp::from_timestamp(
-                    mock_finalized_timestamp.to::<u64>(),
-                    &Resolution::FiveMinutes
-                )
-            )
-        );
-
-        Ok(())
+        BlockBuilder::new(block_number, header.timestamp.to::<u64>(), &logs)
+            .build(&rpc_provider)
+            .await
     }
 
     #[tokio::test]
@@ -457,7 +276,14 @@ mod tests {
 
             assert_eq!(store.last_inserted_block_number(), Some(block.block_number));
             assert_eq!(
-                store.last_finalized_timestamp(),
+                store
+                    .time_price_bars()
+                    .read()
+                    .unwrap()
+                    .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+                    .unwrap()
+                    .last_finalized_timestamp()
+                    .clone(),
                 Some(
                     ResolutionTimestamp::from_timestamp(
                         block.block_timestamp,
@@ -521,11 +347,21 @@ mod tests {
 
             assert_eq!(store.last_inserted_block_number(), Some(block.block_number));
             assert_eq!(
-                store.last_finalized_timestamp(),
-                Some(ResolutionTimestamp::from_timestamp(
-                    mock_finalized_timestamp.to::<u64>(),
-                    &Resolution::FiveMinutes
-                ))
+                store
+                    .time_price_bars()
+                    .read()
+                    .unwrap()
+                    .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+                    .unwrap()
+                    .last_finalized_timestamp()
+                    .clone(),
+                Some(
+                    ResolutionTimestamp::from_timestamp(
+                        mock_finalized_timestamp.to::<u64>(),
+                        &Resolution::FiveMinutes
+                    )
+                    .previous(&Resolution::FiveMinutes)
+                )
             );
             assert_eq!(
                 store
