@@ -1,36 +1,22 @@
-use super::UniswapV2Strategy;
-use crate::{
-    indexer::{
-        IndexedUniswapV2Pair, Indicators, Resolution, ResolutionTimestamp, TimePriceBars,
-        UniswapV2PairTrade,
-    },
-    trade_controller::TradeMetadata,
-};
-
-use alloy::primitives::Address;
+use super::Strategy;
+use crate::indexer::{Indicators, ResolutionTimestamp, TimePriceBars};
 
 use eyre::{eyre, Result};
-use fnv::FnvHashMap;
 
-pub struct UniswapV2MomentumStrategy {}
+pub struct MomentumStrategy {}
 
-impl UniswapV2MomentumStrategy {
+impl MomentumStrategy {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl UniswapV2Strategy for UniswapV2MomentumStrategy {
+impl Strategy for MomentumStrategy {
     fn should_open_position(
         &self,
-        uniswap_v2_pair: &IndexedUniswapV2Pair,
+        pair_time_price_bars: &TimePriceBars,
         timestamp: &ResolutionTimestamp,
-        time_price_bars: &FnvHashMap<Address, TimePriceBars>,
     ) -> Result<()> {
-        let pair_time_price_bars = time_price_bars
-            .get(&uniswap_v2_pair.pair_address)
-            .ok_or_else(|| eyre!("No time price bars for pair"))?;
-
         pair_time_price_bars
             .time_price_bar(timestamp)
             .ok_or_else(|| eyre!("No time price bar found for pair",))
@@ -73,28 +59,19 @@ impl UniswapV2Strategy for UniswapV2MomentumStrategy {
 
     fn should_close_position(
         &self,
-        uniswap_v2_pair: &IndexedUniswapV2Pair,
-        timestamp: &ResolutionTimestamp,
-        resolution: &Resolution,
-        trade: &TradeMetadata<UniswapV2PairTrade>,
-        time_price_bars: &FnvHashMap<Address, TimePriceBars>,
+        pair_time_price_bars: &TimePriceBars,
+        now_block_resolution_timestamp: &ResolutionTimestamp,
+        open_block_resolution_timestamp: &ResolutionTimestamp,
     ) -> Result<()> {
-        let pair_time_price_bars = time_price_bars
-            .get(&uniswap_v2_pair.pair_address)
-            .ok_or_else(|| eyre!("No time price bars for pair"))?;
-
         pair_time_price_bars
-            .time_price_bar(timestamp)
+            .time_price_bar(now_block_resolution_timestamp)
             .ok_or_else(|| eyre!("No time price bar found for pair",))
             .and_then(|time_price_bar| {
                 // If we crossed SMA since entry, close price should be above SMA.
                 // Otherwise entry on EMA cross, so verify that we're still above that.
                 let has_crossed_sma = pair_time_price_bars
                     .data()
-                    .range(
-                        ResolutionTimestamp::from_timestamp(*trade.block_timestamp(), resolution)
-                            ..=*timestamp,
-                    )
+                    .range(open_block_resolution_timestamp..=now_block_resolution_timestamp)
                     .any(|(_, time_price_bar)| match time_price_bar.indicators() {
                         Some(Indicators {
                             bollinger_bands: Some((sma, _, _)),

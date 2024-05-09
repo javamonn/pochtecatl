@@ -1,25 +1,44 @@
-use super::{AddressTrades, Trade, TradeMetadata, TradeRequest, Trades, Transaction};
-use crate::{config, indexer::ParseableTrade, providers::RpcProvider};
+use super::{AddressTrades, Trade, TradeMetadata, TradeRequestIntent, Trades, Transaction};
+use crate::{config, db::NewBacktestClosedTradeModel, providers::RpcProvider};
 
-use alloy::{network::Ethereum, providers::Provider, transports::Transport};
+use alloy::{
+    network::Ethereum, primitives::Address, providers::Provider,
+    rpc::types::eth::TransactionRequest, transports::Transport,
+};
 
 use eyre::{eyre, Result};
 use std::sync::Arc;
 use tracing::error;
 
-pub struct TradeController<PT, T, P>
+pub trait TradeControllerRequest {
+    fn pair_address(&self) -> &Address;
+    fn as_transaction_request(&self, signer_address: Address) -> TransactionRequest;
+
+    async fn trace<T, P>(&self, rpc_provider: &RpcProvider<T, P>) -> Result<()>
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static;
+
+    fn estimate_trade_metadata<T, P>(
+        &self,
+        rpc_provider: &RpcProvider<T, P>,
+    ) -> impl std::future::Future<Output = Result<TradeMetadata>> + Send
+    where
+        T: Transport + Clone,
+        P: Provider<T, Ethereum> + 'static;
+}
+
+pub struct TradeController<T, P>
 where
-    PT: ParseableTrade,
     T: Transport + Clone,
     P: Provider<T, Ethereum> + 'static,
 {
     rpc_provider: Arc<RpcProvider<T, P>>,
-    trades: Trades<PT>,
+    trades: Trades,
 }
 
-impl<PT, T, P> TradeController<PT, T, P>
+impl<T, P> TradeController<T, P>
 where
-    PT: ParseableTrade,
     T: Transport + Clone,
     P: Provider<T, Ethereum>,
 {
@@ -30,7 +49,7 @@ where
         }
     }
 
-    pub fn trades(&self) -> &Trades<PT> {
+    pub fn trades(&self) -> &Trades {
         &self.trades
     }
 
@@ -60,6 +79,27 @@ where
         })
     }
 
+    pub fn insert_backtest_closed_trades(
+        &self,
+        tx: &rusqlite::Transaction,
+        backtest_id: i64,
+    ) -> Result<()> {
+        let trades = self.trades.0.read().unwrap();
+
+        for address_trades in trades.values() {
+            for (open_trade, close_trade) in address_trades.closed() {
+                NewBacktestClosedTradeModel::new(
+                    backtest_id,
+                    open_trade.clone(),
+                    close_trade.clone(),
+                )
+                .insert(tx)?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn send_tx<F, R>(
         &self,
         request: R,
@@ -67,13 +107,13 @@ where
         on_confirmed: F,
     ) -> Result<()>
     where
-        R: TradeRequest<PT, T, P>,
-        F: FnOnce(Result<TradeMetadata<PT>>) + Send + Sync + 'static,
+        R: TradeControllerRequest + Send + 'static,
+        F: FnOnce(Result<TradeMetadata>) + Send + 'static,
     {
         if *config::IS_BACKTEST || cfg!(test) {
             let rpc_provider = rpc_provider.clone();
             tokio::spawn(async move {
-                let metadata = request.as_backtest_trade_metadata(&rpc_provider).await;
+                let metadata = request.estimate_trade_metadata(&rpc_provider).await;
                 on_confirmed(metadata);
             });
 
@@ -94,17 +134,17 @@ where
         }
     }
 
-    pub async fn close_position<R: TradeRequest<PT, T, P>>(
-        &self,
-        close_trade_request: R,
-    ) -> Result<()> {
+    pub async fn close_position<R>(&self, close_trade_request: R) -> Result<()>
+    where
+        R: TradeControllerRequest + Send + 'static,
+    {
         // ensure that an existing open trade exists for this pair, update it to pending close
 
         let open_trade = {
             let mut trades = self.trades.0.write().unwrap();
             let address_trades = trades
-                .get_mut(close_trade_request.address())
-                .ok_or_else(|| eyre!("No open trade for {}", close_trade_request.address()))?;
+                .get_mut(close_trade_request.pair_address())
+                .ok_or_else(|| eyre!("No open trade for {}", close_trade_request.pair_address()))?;
 
             match address_trades.set_active(Some(Trade::PendingClose)) {
                 Some(Trade::Open(open_trade)) => Ok(open_trade),
@@ -122,7 +162,7 @@ where
             Ok(_) => Ok(()),
             Err(err) => {
                 self.trades.set_active(
-                    close_trade_request.address(),
+                    close_trade_request.pair_address(),
                     Some(Trade::Open(open_trade.clone())),
                 )?;
 
@@ -130,7 +170,7 @@ where
             }
         }?;
 
-        let address = close_trade_request.address().clone();
+        let address = close_trade_request.pair_address().clone();
         let trades = self.trades.clone();
 
         match self
@@ -185,16 +225,16 @@ where
         }
     }
 
-    pub async fn open_position<R: TradeRequest<PT, T, P>>(
-        &self,
-        open_position_request: R,
-    ) -> Result<()> {
+    pub async fn open_position<R>(&self, open_position_request: R) -> Result<()>
+    where
+        R: TradeControllerRequest + Send + 'static,
+    {
         // ensure that we do not already have a position for this pair and add
         // the position to the store
         {
             let mut trades = self.trades.0.write().unwrap();
             let address_trades = trades
-                .entry(open_position_request.address().clone())
+                .entry(open_position_request.pair_address().clone())
                 .or_insert_with(|| AddressTrades::default());
 
             match address_trades.active() {
@@ -202,7 +242,7 @@ where
                 Some(_) => {
                     return Err(eyre!(
                         "Position already exists for pair {}",
-                        open_position_request.address()
+                        open_position_request.pair_address()
                     ));
                 }
             };
@@ -218,10 +258,10 @@ where
             .inspect_err(|_| {
                 let _ = self
                     .trades
-                    .set_active(open_position_request.address(), None);
+                    .set_active(open_position_request.pair_address(), None);
             })?;
 
-        let address = open_position_request.address().clone();
+        let address = open_position_request.pair_address().clone();
         let trades = self.trades.clone();
 
         match self
@@ -281,13 +321,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Trade, TradeController};
+    use super::{TradeController, TradeControllerRequest};
 
     use crate::{
         config,
-        indexer::ParseableTrade,
+        primitives::UniswapV2PairTrade,
         providers::{rpc_provider::new_http_signer_provider, RpcProvider},
-        trade_controller::{TradeMetadata, TradeRequest},
+        trade_controller::{ParsedTrade, Trade, TradeMetadata},
     };
 
     use eyre::{eyre, Result};
@@ -298,21 +338,9 @@ mod tests {
         network::Ethereum,
         primitives::{Address, BlockNumber, U256},
         providers::Provider,
-        rpc::types::eth::{Log, TransactionRequest},
+        rpc::types::eth::TransactionRequest,
         transports::Transport,
     };
-
-    #[derive(Copy, Clone, Debug)]
-    struct MockTrade {}
-    impl ParseableTrade for MockTrade {
-        fn parse_from_log(
-            _log: &Log,
-            _logs: &Vec<Log>,
-            _relative_log_idx: usize,
-        ) -> Option<MockTrade> {
-            Some(MockTrade {})
-        }
-    }
 
     struct MockTradeRequest {
         address: Address,
@@ -336,27 +364,31 @@ mod tests {
         }
     }
 
-    impl<T, P> TradeRequest<MockTrade, T, P> for MockTradeRequest
-    where
-        T: Transport + Clone,
-        P: Provider<T, Ethereum>,
-    {
+    impl TradeControllerRequest for MockTradeRequest {
+        fn pair_address(&self) -> &Address {
+            &self.address
+        }
+
         fn as_transaction_request(&self, _signer_address: Address) -> TransactionRequest {
             unimplemented!()
         }
 
-        fn address(&self) -> &Address {
-            &self.address
-        }
-
-        async fn trace(&self, _rpc_provider: &RpcProvider<T, P>) -> Result<()> {
+        async fn trace<T, P>(&self, _rpc_provider: &RpcProvider<T, P>) -> Result<()>
+        where
+            T: Transport + Clone,
+            P: Provider<T, Ethereum> + 'static,
+        {
             Ok(())
         }
 
-        async fn as_backtest_trade_metadata(
+        async fn estimate_trade_metadata<T, P>(
             &self,
             _rpc_provider: &RpcProvider<T, P>,
-        ) -> Result<TradeMetadata<MockTrade>> {
+        ) -> Result<TradeMetadata>
+        where
+            T: Transport + Clone,
+            P: Provider<T, Ethereum> + 'static,
+        {
             let confirmed_lock = Arc::clone(&self.confirmed_lock);
             let block_number = self.block_number;
             let should_revert = self.should_revert;
@@ -369,7 +401,15 @@ mod tests {
                         block_number,
                         0,
                         U256::ZERO,
-                        MockTrade {},
+                        ParsedTrade::UniswapV2PairTrade(UniswapV2PairTrade::new(
+                            U256::ZERO,
+                            U256::ZERO,
+                            U256::ZERO,
+                            U256::ZERO,
+                            U256::ZERO,
+                            U256::ZERO,
+                            Address::ZERO,
+                        )),
                     ))
                 }
             })

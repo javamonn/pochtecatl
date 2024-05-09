@@ -176,6 +176,20 @@ impl PendingTimePriceBar {
         self.indicators = Some(indicators);
     }
 
+    pub fn insert_block_price_bar_range<I: Iterator<Item=BlockNumber>>(
+        &mut self,
+        block_numbers: I,
+        data: &TimePriceBarData,
+    ) {
+        for block_number in block_numbers {
+            self.block_price_bars.insert(block_number, *data);
+        }
+
+        self.data = TimePriceBarData::reduce(self.block_price_bars.values());
+        self.indicators = None;
+        self.close = self.data.as_ref().map(|data| data.close());
+    }
+
     pub fn insert_block_price_bar(&mut self, block_number: BlockNumber, data: TimePriceBarData) {
         self.block_price_bars.insert(block_number, data);
         self.data = TimePriceBarData::reduce(self.block_price_bars.values());
@@ -242,6 +256,28 @@ impl TimePriceBar {
             }
             TimePriceBar::Finalized(finalized_time_price_bar) => {
                 Some(finalized_time_price_bar.indicators())
+            }
+        }
+    }
+
+    pub fn end_block_number(&self) -> Option<&BlockNumber> {
+        match self {
+            TimePriceBar::Pending(pending_time_price_bar) => {
+                pending_time_price_bar.end_block_number()
+            }
+            TimePriceBar::Finalized(finalized_time_price_bar) => {
+                Some(&finalized_time_price_bar.end_block_number)
+            }
+        }
+    }
+
+    pub fn start_block_number(&self) -> Option<&BlockNumber> {
+        match self {
+            TimePriceBar::Pending(pending_time_price_bar) => {
+                pending_time_price_bar.start_block_number()
+            }
+            TimePriceBar::Finalized(finalized_time_price_bar) => {
+                Some(&finalized_time_price_bar.start_block_number)
             }
         }
     }

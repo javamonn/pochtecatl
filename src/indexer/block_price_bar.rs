@@ -1,4 +1,4 @@
-use super::block_parser::UniswapV2Pair;
+use crate::primitives::UniswapV2Pair;
 
 use fraction::GenericFraction;
 
@@ -52,7 +52,7 @@ impl BlockPriceBar {
 mod tests {
     use super::BlockPriceBar;
 
-    use crate::indexer::block_parser::{UniswapV2Pair, UniswapV2PairTrade};
+    use crate::primitives::{UniswapV2Pair, UniswapV2PairTrade};
 
     use alloy::primitives::{address, uint};
 

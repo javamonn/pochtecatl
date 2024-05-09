@@ -1,6 +1,6 @@
-use super::trade::TradeMetadata;
+use super::{ParsedTrade, TradeMetadata};
 
-use crate::{indexer::ParseableTrade, providers::RpcProvider};
+use crate::providers::RpcProvider;
 
 use alloy::{
     network::Ethereum,
@@ -36,33 +36,24 @@ impl Transaction {
             .wrap_err("Failed to send_transaction")
     }
 
-    pub async fn into_trade_metadata<PT, T, P>(
+    pub async fn into_trade_metadata<T, P>(
         self,
         rpc_provider: &RpcProvider<T, P>,
-    ) -> Result<TradeMetadata<PT>>
+    ) -> Result<TradeMetadata>
     where
-        PT: ParseableTrade,
         T: Transport + Clone,
         P: Provider<T, Ethereum> + 'static,
     {
         let tx_hash = self.0.clone();
 
         // Wait for the tx to confirm or reject
-        let receipt = PendingTransactionBuilder::new(rpc_provider.inner().root(), self.0)
+        let confirmed_receipt = PendingTransactionBuilder::new(rpc_provider.inner().root(), self.0)
             .with_timeout(Some(Duration::from_secs(10)))
             .with_required_confirmations(1)
             .get_receipt()
             .await
             .wrap_err_with(|| format!("Failed to get receipt for tx hash {:?}", tx_hash))?;
 
-        // Convert the committed tx into a trade
-        TradeMetadata::from_receipt(&receipt, rpc_provider)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to convert receipt to committed trade for tx hash {:?}",
-                    tx_hash
-                )
-            })
+        TradeMetadata::from_receipt(&confirmed_receipt, rpc_provider).await
     }
 }

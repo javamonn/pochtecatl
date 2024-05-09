@@ -1,4 +1,4 @@
-use crate::{indexer::ParseableTrade, providers::RpcProvider};
+use crate::{primitives::UniswapV2PairTrade, providers::RpcProvider};
 
 use alloy::{
     network::Ethereum,
@@ -8,22 +8,49 @@ use alloy::{
     transports::Transport,
 };
 
-use eyre::{eyre, Result};
+use eyre::{eyre, OptionExt, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug)]
-pub struct TradeMetadata<PT: ParseableTrade> {
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ParsedTrade {
+    UniswapV2PairTrade(UniswapV2PairTrade),
+}
+
+impl TryFrom<&TransactionReceipt> for ParsedTrade {
+    type Error = eyre::Error;
+
+    fn try_from(tx_receipt: &TransactionReceipt) -> Result<Self> {
+        let receipt = tx_receipt
+            .as_ref()
+            .as_receipt()
+            .ok_or_eyre("Failed to convert TransactionReceipt to Receipt")?;
+
+        for (idx, log) in receipt.logs.iter().enumerate() {
+            if let Some(parsed_trade) =
+                UniswapV2PairTrade::try_parse_from_log(log, &receipt.logs, idx)
+            {
+                return Ok(ParsedTrade::UniswapV2PairTrade(parsed_trade));
+            }
+        }
+
+        Err(eyre!("No parsed trade found"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct TradeMetadata {
     block_number: BlockNumber,
     block_timestamp: u64,
     gas_fee: U256,
-    parsed_trade: PT,
+    parsed_trade: ParsedTrade,
 }
 
-impl<PT: ParseableTrade> TradeMetadata<PT> {
+impl TradeMetadata {
     pub fn new(
         block_number: BlockNumber,
         block_timestamp: u64,
         gas_fee: U256,
-        parsed_trade: PT,
+        parsed_trade: ParsedTrade,
     ) -> Self {
         Self {
             block_number,
@@ -31,6 +58,18 @@ impl<PT: ParseableTrade> TradeMetadata<PT> {
             gas_fee,
             parsed_trade,
         }
+    }
+
+    pub fn block_timestamp(&self) -> &u64 {
+        &self.block_timestamp
+    }
+
+    pub fn parsed_trade(&self) -> &ParsedTrade {
+        &self.parsed_trade
+    }
+
+    pub fn block_number(&self) -> &BlockNumber {
+        &self.block_number
     }
 
     pub async fn from_receipt<T, P>(
@@ -49,19 +88,6 @@ impl<PT: ParseableTrade> TradeMetadata<PT> {
                 .gas_used
                 .ok_or_else(|| eyre!("Gas used not found"))?,
         ) * U256::from(receipt.effective_gas_price);
-        let parsed_trade = receipt
-            .as_ref()
-            .as_receipt()
-            .ok_or_else(|| eyre!("Transaction receipt is not a receipt"))
-            .and_then(|r| {
-                for (idx, log) in r.logs.iter().enumerate() {
-                    if let Some(parsed_trade) = ParseableTrade::parse_from_log(log, &r.logs, idx) {
-                        return Ok(parsed_trade);
-                    }
-                }
-
-                Err(eyre!("No Uniswap V2 pair trade found in receipt"))
-            })?;
         let block_timestamp = rpc_provider
             .block_provider()
             .get_block_header(block_number)
@@ -70,6 +96,7 @@ impl<PT: ParseableTrade> TradeMetadata<PT> {
                 header.ok_or_else(|| eyre!("block header {:?} not found", receipt.block_number))
             })
             .map(|header| header.timestamp.to::<u64>())?;
+        let parsed_trade = receipt.try_into()?;
 
         Ok(Self {
             block_number,
@@ -77,34 +104,5 @@ impl<PT: ParseableTrade> TradeMetadata<PT> {
             gas_fee,
             parsed_trade,
         })
-    }
-
-    pub fn block_timestamp(&self) -> &u64 {
-        &self.block_timestamp
-    }
-
-    pub fn parsed_trade(&self) -> &PT {
-        &self.parsed_trade
-    }
-
-    pub fn block_number(&self) -> &BlockNumber {
-        &self.block_number
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Trade<T: ParseableTrade> {
-    PendingOpen,
-    Open(TradeMetadata<T>),
-    PendingClose,
-}
-
-impl<T: ParseableTrade> Trade<T> {
-    pub fn label(&self) -> &str {
-        match self {
-            Trade::PendingOpen => "Pending Open",
-            Trade::Open(_) => "Open",
-            Trade::PendingClose => "Pending Close",
-        }
     }
 }

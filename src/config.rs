@@ -4,7 +4,7 @@ use alloy::primitives::{Address, FixedBytes};
 
 use eyre::Context;
 use lazy_static::lazy_static;
-use std::{env, ffi::OsStr, sync::Once};
+use std::{env, ffi::OsStr,  sync::Once};
 
 static DOTENV_INIT: Once = Once::new();
 
@@ -31,6 +31,9 @@ lazy_static! {
         .unwrap_or_else(|_| BlockId::Latest);
     pub static ref RPC_URL: String = get_env_var("RPC_URL")
         .wrap_err("Failed to read RPC_URL from env")
+        .unwrap();
+    pub static ref DB_PATH: String = get_env_var("DB_PATH")
+        .wrap_err("Failed to read DB_PATH from env")
         .unwrap();
     pub static ref WETH_ADDRESS: Address = get_env_var("WETH_ADDRESS")
         .wrap_err("Failed to read WETH_ADDRESS from env")

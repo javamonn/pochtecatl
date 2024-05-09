@@ -14,7 +14,7 @@ use std::{iter, sync::Arc};
 use tokio::task::JoinSet;
 use tracing::instrument;
 
-const MULTICALL_CHUNK_SIZE: usize = 1000;
+const MULTICALL_CHUNK_SIZE: usize = 50;
 
 #[instrument(skip_all, fields(calls_count = calls.len()))]
 pub async fn multicall<T, P>(

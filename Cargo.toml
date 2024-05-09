@@ -49,3 +49,7 @@ alloy = { git = "https://github.com/alloy-rs/alloy", rev = "bfd0fda", features =
 ] }
 url = "2.5.0"
 reqwest = "0.12.4"
+rusqlite = { version = "0.31.0", features = ["bundled", "serde_json", "unlock_notify"] }
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.24.0"
+fallible-iterator = "0.3.0"

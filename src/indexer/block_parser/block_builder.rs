@@ -1,6 +1,7 @@
-use super::{Block, ParseableTrade, UniswapV2PairTrade};
-
-use crate::providers::RpcProvider;
+use crate::{
+    primitives::{Block, UniswapV2PairTrade},
+    providers::RpcProvider,
+};
 
 use alloy::{
     network::Ethereum,
@@ -12,8 +13,7 @@ use alloy::{
 
 use eyre::Result;
 use fnv::FnvHashSet;
-use std::sync::Arc;
-use tracing::{warn, instrument};
+use tracing::{instrument, warn};
 
 pub struct BlockBuilder {
     pub block_number: BlockNumber,
@@ -40,7 +40,8 @@ impl BlockBuilder {
             }
 
             // Try to parse a uniswap v2 trade
-            if let Some(uniswap_v2_pair_trade) = UniswapV2PairTrade::parse_from_log(log, logs, idx)
+            if let Some(uniswap_v2_pair_trade) =
+                UniswapV2PairTrade::try_parse_from_log(log, logs, idx)
             {
                 uniswap_v2_pairs.push((log.address(), uniswap_v2_pair_trade));
             }
@@ -57,7 +58,7 @@ impl BlockBuilder {
     #[instrument(skip_all)]
     pub async fn build_many<T, P>(
         block_builders: Vec<Self>,
-        rpc_provider: Arc<RpcProvider<T, P>>,
+        rpc_provider: &RpcProvider<T, P>,
     ) -> Result<Vec<Block>>
     where
         T: Transport + Clone,
@@ -119,7 +120,8 @@ impl BlockBuilder {
         Ok(blocks)
     }
 
-    pub async fn build<T, P>(self, rpc_provider: Arc<RpcProvider<T, P>>) -> Result<Block>
+    #[cfg(test)]
+    pub async fn build<T, P>(self, rpc_provider: &RpcProvider<T, P>) -> Result<Block>
     where
         T: Transport + Clone,
         P: Provider<T, Ethereum> + 'static,
@@ -160,5 +162,78 @@ impl BlockBuilder {
         );
 
         Ok(block)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BlockBuilder;
+    use crate::{
+        abi::IUniswapV2Pair, config, primitives::UniswapV2PairTrade,
+        providers::rpc_provider::new_http_signer_provider,
+    };
+
+    use eyre::Result;
+    use std::sync::Arc;
+
+    use alloy::{
+        primitives::{address, uint},
+        rpc::types::eth::Filter,
+        sol_types::SolEvent,
+    };
+
+    #[tokio::test]
+    async fn test_build_many() -> Result<()> {
+        let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
+        let block_number = 12822402;
+        let mock_timestamp = 100000;
+
+        let logs_filter = Filter::new()
+            .from_block(block_number)
+            .to_block(block_number)
+            .event_signature(vec![
+                IUniswapV2Pair::Sync::SIGNATURE_HASH,
+                IUniswapV2Pair::Swap::SIGNATURE_HASH,
+            ]);
+
+        let logs = rpc_provider.get_logs(&logs_filter).await?;
+
+        let builder = BlockBuilder::new(block_number.into(), mock_timestamp, &logs);
+
+        let block = &BlockBuilder::build_many(vec![builder], &rpc_provider).await?[0];
+
+        assert_eq!(block.block_number, block_number);
+        assert_eq!(block.block_timestamp, mock_timestamp);
+        assert_eq!(block.uniswap_v2_pairs.len(), 4);
+
+        let pair = block
+            .uniswap_v2_pairs
+            .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+            .expect("Expected trades for pair");
+
+        let expected_trades = vec![
+            UniswapV2PairTrade::new(
+                uint!(0_U256),
+                uint!(196648594373849_U256),
+                uint!(110094173315701195_U256),
+                uint!(0_U256),
+                uint!(24234363659908185248_U256),
+                uint!(43353851609950831_U256),
+                address!("1Fba6b0BBae2B74586fBA407Fb45Bd4788B7b130"),
+            ),
+            UniswapV2PairTrade::new(
+                uint!(7500000000000000_U256),
+                uint!(0_U256),
+                uint!(0_U256),
+                uint!(13372681690099_U256),
+                uint!(24241863659908185248_U256),
+                uint!(43340478928260732_U256),
+                address!("7381C38985dA304eBA18fCef5E1f6e9fA0798b84"),
+            ),
+        ];
+
+        assert_eq!(pair.trades, expected_trades);
+
+        Ok(())
     }
 }
