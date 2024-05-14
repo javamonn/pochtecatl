@@ -1,7 +1,7 @@
 SELECT
   number,
   timestamp,
-  uniswap_v2_pairs
+  pair_ticks 
 FROM blocks
 WHERE
   number >= :min_number AND number <= :max_number

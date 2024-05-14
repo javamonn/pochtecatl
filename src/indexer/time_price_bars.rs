@@ -1,9 +1,6 @@
-use crate::config;
+use crate::{config, primitives::TickData};
 
-use super::{
-    Indicators, PendingTimePriceBar, Resolution, ResolutionTimestamp, TimePriceBar,
-    TimePriceBarData,
-};
+use super::{Indicators, PendingTimePriceBar, Resolution, ResolutionTimestamp, TimePriceBar};
 
 use alloy::primitives::BlockNumber;
 
@@ -55,7 +52,7 @@ impl TimePriceBars {
         &self,
         start_resolution_timestamp: &ResolutionTimestamp,
         end_resolution_timestamp: &ResolutionTimestamp,
-    ) -> Vec<(&ResolutionTimestamp, &TimePriceBarData)> {
+    ) -> Vec<(&ResolutionTimestamp, &TickData)> {
         self.data
             .range(start_resolution_timestamp..=end_resolution_timestamp)
             .filter_map(|(timestamp, time_price_bar)| {
@@ -152,7 +149,7 @@ impl TimePriceBars {
     pub fn insert_data(
         &mut self,
         block_number: BlockNumber,
-        data: TimePriceBarData,
+        data: TickData,
         block_timestamp: u64,
         finalized_timestamp: Option<ResolutionTimestamp>,
     ) -> Result<()> {
@@ -345,9 +342,12 @@ impl TimePriceBars {
 
 #[cfg(test)]
 mod tests {
-    use crate::indexer::{
-        time_price_bar_indicators::INDICATOR_BB_PERIOD, Resolution, ResolutionTimestamp,
-        TimePriceBar, TimePriceBarData,
+    use crate::{
+        indexer::{
+            time_price_bar_indicators::INDICATOR_BB_PERIOD, Resolution, ResolutionTimestamp,
+            TimePriceBar,
+        },
+        primitives::TickData,
     };
 
     use super::TimePriceBars;
@@ -363,11 +363,12 @@ mod tests {
         let mock_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(mock_timestamp, &Resolution::FiveMinutes);
 
-        let mock_data = TimePriceBarData::new(
+        let mock_data = TickData::new(
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
+            0_u128.into(),
         );
 
         // test initial insert
@@ -419,11 +420,12 @@ mod tests {
         let mock_timestamp = 10000;
         let mock_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(mock_timestamp, &Resolution::FiveMinutes);
-        let mock_data = TimePriceBarData::new(
+        let mock_data = TickData::new(
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
+            0_u128.into(),
         );
 
         // test the base case of pending block with partial block data
@@ -468,11 +470,12 @@ mod tests {
         let mock_timestamp = 10000;
         let mock_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(mock_timestamp, &Resolution::FiveMinutes);
-        let mock_data = TimePriceBarData::new(
+        let mock_data = TickData::new(
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
             GenericFraction::new(1_u128, 1_u128),
+            0_u128.into(),
         );
         let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
         time_price_bars.insert_data(1_u64, mock_data.clone(), mock_timestamp, None)?;
@@ -491,11 +494,12 @@ mod tests {
         for i in 1..=INDICATOR_BB_PERIOD {
             time_price_bars.insert_data(
                 i,
-                TimePriceBarData::new(
+                TickData::new(
                     GenericFraction::new(1_u128, 1_u128),
                     GenericFraction::new(1_u128, 1_u128),
                     GenericFraction::new(1_u128, 1_u128),
                     GenericFraction::new(i as u128, 1_u128),
+                    0_u128.into(),
                 ),
                 i * Resolution::FiveMinutes.offset() + 10000,
                 None,

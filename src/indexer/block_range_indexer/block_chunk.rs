@@ -1,6 +1,8 @@
-use super::super::BlockBuilder;
 use crate::{
-    abi::IUniswapV2Pair, config, db::BlockModel, primitives::Block, providers::RpcProvider,
+    config,
+    db::BlockModel,
+    primitives::{Block, BlockBuilder, IndexedTrade},
+    providers::RpcProvider,
 };
 
 use alloy::{
@@ -71,10 +73,7 @@ impl BlockChunk {
         let filter = Filter::new()
             .from_block(start_block_number)
             .to_block(end_block_number)
-            .event_signature(vec![
-                IUniswapV2Pair::Sync::SIGNATURE_HASH,
-                IUniswapV2Pair::Swap::SIGNATURE_HASH,
-            ]);
+            .event_signature(IndexedTrade::event_signature_hashes());
 
         let (logs, start_block_header) = tokio::join!(
             rpc_provider.get_logs(&filter),
@@ -189,15 +188,15 @@ mod tests {
         let end_block_header = end_block_header?;
 
         assert_eq!(block_chunk.data.len(), 21);
-        assert!(block_chunk
-            .data
-            .first()
-            .is_some_and(|b| b.block_number == 13868901 && b.uniswap_v2_pairs.len() == 11));
-        assert!(block_chunk
-            .data
-            .last()
-            .is_some_and(|b| b.block_number == 13868921
-                && b.block_timestamp == end_block_header.unwrap().timestamp.to::<u64>()));
+
+        let first_block = block_chunk.data.first().unwrap();
+        assert_eq!(first_block.block_number, 13868901);
+        assert_eq!(first_block.pair_ticks.len(), 19);
+
+        let last_block = block_chunk.data.last().unwrap();
+        assert_eq!(last_block.block_number, 13868921);
+        assert_eq!(last_block.block_timestamp, end_block_header.unwrap().timestamp.to::<u64>());
+
         assert!(matches!(block_chunk.source, BlockChunkSource::Rpc));
 
         Ok(())
@@ -219,7 +218,7 @@ mod tests {
                 BlockModel {
                     number: (block_number as u64).into(),
                     timestamp: (block_number as u64).into(),
-                    uniswap_v2_pairs: serde_json::json!({}),
+                    pair_ticks: serde_json::json!({}),
                 }
                 .insert(&tx)?;
             }

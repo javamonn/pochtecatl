@@ -1,32 +1,11 @@
-use super::{AddressTrades, Trade, TradeMetadata, TradeRequestIntent, Trades, Transaction};
+use super::{AddressTrades, Trade, TradeControllerRequest, TradeMetadata, Trades, Transaction};
 use crate::{config, db::NewBacktestClosedTradeModel, providers::RpcProvider};
 
-use alloy::{
-    network::Ethereum, primitives::Address, providers::Provider,
-    rpc::types::eth::TransactionRequest, transports::Transport,
-};
+use alloy::{network::Ethereum, providers::Provider, transports::Transport};
 
 use eyre::{eyre, Result};
 use std::sync::Arc;
 use tracing::error;
-
-pub trait TradeControllerRequest {
-    fn pair_address(&self) -> &Address;
-    fn as_transaction_request(&self, signer_address: Address) -> TransactionRequest;
-
-    async fn trace<T, P>(&self, rpc_provider: &RpcProvider<T, P>) -> Result<()>
-    where
-        T: Transport + Clone,
-        P: Provider<T, Ethereum> + 'static;
-
-    fn estimate_trade_metadata<T, P>(
-        &self,
-        rpc_provider: &RpcProvider<T, P>,
-    ) -> impl std::future::Future<Output = Result<TradeMetadata>> + Send
-    where
-        T: Transport + Clone,
-        P: Provider<T, Ethereum> + 'static;
-}
 
 pub struct TradeController<T, P>
 where
@@ -100,7 +79,7 @@ where
         Ok(())
     }
 
-    async fn send_tx<F, R>(
+    async fn send_tx<R, F>(
         &self,
         request: R,
         rpc_provider: Arc<RpcProvider<T, P>>,
@@ -113,24 +92,23 @@ where
         if *config::IS_BACKTEST || cfg!(test) {
             let rpc_provider = rpc_provider.clone();
             tokio::spawn(async move {
-                let metadata = request.estimate_trade_metadata(&rpc_provider).await;
-                on_confirmed(metadata);
+                on_confirmed(request.simulate_trade_request(&rpc_provider).await)
             });
 
             Ok(())
         } else {
-            Transaction::send(
-                request.as_transaction_request(rpc_provider.signer_address().clone()),
-                &rpc_provider,
-            )
-            .await
-            .map(|tx| {
-                let rpc_provider = rpc_provider.clone();
-                tokio::spawn(async move {
-                    let metadata = tx.into_trade_metadata(&rpc_provider).await;
-                    on_confirmed(metadata);
-                });
-            })
+            let transaction_request = request
+                .make_trade_transaction_request(&rpc_provider)
+                .await?;
+            Transaction::send(transaction_request, &rpc_provider)
+                .await
+                .map(|tx| {
+                    let rpc_provider = rpc_provider.clone();
+                    tokio::spawn(async move {
+                        let metadata = tx.into_trade_metadata(&rpc_provider).await;
+                        on_confirmed(metadata);
+                    });
+                })
         }
     }
 
@@ -172,41 +150,39 @@ where
 
         let address = close_trade_request.pair_address().clone();
         let trades = self.trades.clone();
+        let moved_open_trade = open_trade.clone();
+        let on_confirmed = move |res| match res {
+            Ok(committed_trade) => {
+                // Backtest success: update trade closed, clear active trade
+                if let Err(err) = trades.close(&address, moved_open_trade, committed_trade) {
+                    error!(
+                        address = address.to_string(),
+                        "Failed to close trade: {:?}", err
+                    );
+                }
+            }
+            Err(err) => {
+                // Backtest failed: revert the pending close active state
+                if let Err(revert_err) =
+                    trades.set_active(&address, Some(Trade::Open(moved_open_trade)))
+                {
+                    error!(
+                        address = address.to_string(),
+                        "Failed to revert pending close: {:?}, original error: {:?}",
+                        revert_err,
+                        err
+                    );
+                } else {
+                    error!(
+                        address = address.to_string(),
+                        "Failed to close trade: {:?}", err
+                    );
+                }
+            }
+        };
 
         match self
-            .send_tx(
-                close_trade_request,
-                self.rpc_provider.clone(),
-                move |res| match res {
-                    Ok(committed_trade) => {
-                        // Backtest success: update trade closed, clear active trade
-                        if let Err(err) = trades.close(&address, open_trade, committed_trade) {
-                            error!(
-                                address = address.to_string(),
-                                "Failed to close trade: {:?}", err
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        // Backtest failed: revert the pending close active state
-                        if let Err(revert_err) =
-                            trades.set_active(&address, Some(Trade::Open(open_trade)))
-                        {
-                            error!(
-                                address = address.to_string(),
-                                "Failed to revert pending close: {:?}, original error: {:?}",
-                                revert_err,
-                                err
-                            );
-                        } else {
-                            error!(
-                                address = address.to_string(),
-                                "Failed to close trade: {:?}", err
-                            );
-                        }
-                    }
-                },
-            )
+            .send_tx(close_trade_request, self.rpc_provider.clone(), on_confirmed)
             .await
         {
             Ok(_) => Ok(()),
@@ -321,13 +297,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{TradeController, TradeControllerRequest};
+    use super::TradeController;
 
     use crate::{
         config,
-        primitives::UniswapV2PairTrade,
+        primitives::{IndexedTrade, UniswapV2IndexedTrade},
         providers::{rpc_provider::new_http_signer_provider, RpcProvider},
-        trade_controller::{ParsedTrade, Trade, TradeMetadata},
+        trade_controller::{Trade, TradeControllerRequest, TradeMetadata},
     };
 
     use eyre::{eyre, Result};
@@ -369,7 +345,14 @@ mod tests {
             &self.address
         }
 
-        fn as_transaction_request(&self, _signer_address: Address) -> TransactionRequest {
+        async fn make_trade_transaction_request<T, P>(
+            &self,
+            _rpc_provider: &RpcProvider<T, P>,
+        ) -> Result<TransactionRequest>
+        where
+            T: Transport + Clone,
+            P: Provider<T, Ethereum> + 'static,
+        {
             unimplemented!()
         }
 
@@ -381,7 +364,7 @@ mod tests {
             Ok(())
         }
 
-        async fn estimate_trade_metadata<T, P>(
+        async fn simulate_trade_request<T, P>(
             &self,
             _rpc_provider: &RpcProvider<T, P>,
         ) -> Result<TradeMetadata>
@@ -401,7 +384,8 @@ mod tests {
                         block_number,
                         0,
                         U256::ZERO,
-                        ParsedTrade::UniswapV2PairTrade(UniswapV2PairTrade::new(
+                        IndexedTrade::UniswapV2(UniswapV2IndexedTrade::new(
+                            Address::ZERO,
                             U256::ZERO,
                             U256::ZERO,
                             U256::ZERO,

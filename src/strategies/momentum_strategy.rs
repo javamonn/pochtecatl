@@ -36,15 +36,15 @@ impl Strategy for MomentumStrategy {
                         bollinger_bands: Some((band_mean, _, _)),
                     }) => {
                         let close = time_price_bar.close();
-                        if close < *ema {
+                        if close < ema {
                             Err(eyre!("Close price {:?} is below EMA {:?}", close, ema))
-                        } else if close > *band_mean {
+                        } else if close > band_mean {
                             Err(eyre!(
                                 "Close price {:?} is above bollinger band mean {:?}",
                                 close,
                                 band_mean
                             ))
-                        } else if *ema_slope < 0.0 {
+                        } else if ema_slope.is_sign_negative() {
                             Err(eyre!("EMA slope {:?} is negative", ema_slope))
                         } else {
                             // open a trade
@@ -76,13 +76,13 @@ impl Strategy for MomentumStrategy {
                         Some(Indicators {
                             bollinger_bands: Some((sma, _, _)),
                             ..
-                        }) => time_price_bar.close() >= *sma,
+                        }) => time_price_bar.close() >= sma,
                         _ => false,
                     });
 
                 match time_price_bar.indicators() {
                     Some(Indicators { ema: (ema, _), .. }) if has_crossed_sma => {
-                        if time_price_bar.close() > *ema {
+                        if time_price_bar.close() > ema {
                             Err(eyre!("Close is above EMA after crossing SMA"))
                         } else {
                             // Close is below EMA after crossing SMA, close the trade
@@ -93,7 +93,7 @@ impl Strategy for MomentumStrategy {
                         bollinger_bands: Some((sma, _, _)),
                         ..
                     }) => {
-                        if time_price_bar.close() > *sma {
+                        if time_price_bar.close() > sma {
                             Err(eyre!("Close is above SMA after entry"))
                         } else {
                             // Close is below SMA after entry, close the trade

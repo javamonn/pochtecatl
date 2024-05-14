@@ -4,6 +4,7 @@ use eyre::Result;
 use rusqlite::{named_params, Transaction};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(dead_code)]
 pub struct Backtest {
     pub id: i64,
     pub timestamp: U64,

@@ -1,6 +1,6 @@
 use crate::config;
 
-use super::{BlockProvider, TTLCache, UniswapV2PairProvider};
+use super::{BlockProvider, TTLCache, IndexedTradeProvider};
 
 use alloy::{
     network::{Ethereum, EthereumSigner},
@@ -25,7 +25,7 @@ pub struct RpcProvider<T: Transport + Clone, P: Provider<T, Ethereum>> {
     signer_address: Address,
     inner: Arc<P>,
 
-    uniswap_v2_pair_provider: UniswapV2PairProvider<T, P>,
+    indexed_trade_provider: IndexedTradeProvider<T, P>,
     block_provider: BlockProvider<T, P>,
 }
 
@@ -57,13 +57,13 @@ pub async fn new_http_signer_provider(
             .map_err(|err| eyre!("Failed to create provider: {:?}", err))?,
     );
 
-    let uniswap_v2_pair_provider = UniswapV2PairProvider::new(Arc::clone(&inner));
+    let indexed_trade_provider = IndexedTradeProvider::new(Arc::clone(&inner));
     let block_provider = BlockProvider::new(Arc::clone(&inner), finalized_block_header_cache);
 
     Ok(RpcProvider {
         inner,
         signer_address,
-        uniswap_v2_pair_provider,
+        indexed_trade_provider,
         block_provider,
     })
 }
@@ -77,10 +77,12 @@ where
         &self.block_provider
     }
 
-    pub fn uniswap_v2_pair_provider(&self) -> &UniswapV2PairProvider<T, P> {
-        &self.uniswap_v2_pair_provider
+    pub fn indexed_trade_provider(&self) -> &IndexedTradeProvider<T, P> {
+        &self.indexed_trade_provider
     }
 
+    // TODO: used by disabled trace code
+    #[allow(dead_code)]
     pub async fn trace_call_many(
         &self,
         tx_requests: &[(TransactionRequest, Vec<TraceType>)],

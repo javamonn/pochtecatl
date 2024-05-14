@@ -1,92 +1,10 @@
-use super::TimePriceBarStore;
+use crate::strategies::StrategyExecutor;
 
-use crate::{config, primitives::Block, strategies::StrategyExecutor};
+#[cfg(test)]
+use crate::config;
 
-use alloy::{
-    primitives::{Address, BlockNumber, U256},
-    transports::Transport,
-    network::Ethereum,
-    providers::Provider,
-};
+use alloy::{network::Ethereum, providers::Provider, transports::Transport};
 use eyre::Result;
-use std::sync::Arc;
-use tokio::sync::oneshot;
-
-pub struct IndexedUniswapV2Pair {
-    pub token_reserve: U256,
-    pub weth_reserve: U256,
-    pub token_address: Address,
-    pub pair_address: Address,
-}
-
-impl IndexedUniswapV2Pair {
-    pub fn new(
-        token_reserve: U256,
-        weth_reserve: U256,
-        token_address: Address,
-        pair_address: Address,
-    ) -> Self {
-        Self {
-            token_reserve,
-            weth_reserve,
-            token_address,
-            pair_address,
-        }
-    }
-}
-
-pub struct IndexedBlockMessage {
-    pub block_number: BlockNumber,
-    pub block_timestamp: u64,
-    pub uniswap_v2_pairs: Vec<IndexedUniswapV2Pair>,
-    pub ack: Option<oneshot::Sender<()>>,
-}
-
-impl IndexedBlockMessage {
-    pub fn new(
-        block_number: BlockNumber,
-        block_timestamp: u64,
-        uniswap_v2_pairs: Vec<IndexedUniswapV2Pair>,
-        ack: Option<oneshot::Sender<()>>,
-    ) -> Self {
-        Self {
-            block_number,
-            block_timestamp,
-            uniswap_v2_pairs,
-            ack,
-        }
-    }
-
-    pub fn from_block(block: &Block) -> Self {
-        Self::new(
-            block.block_number,
-            block.block_timestamp,
-            block
-                .uniswap_v2_pairs
-                .iter()
-                .filter_map(|(pair_address, pair)| match pair.trades.last() {
-                    Some(trade) => {
-                        let (token_reserve, weth_reserve) =
-                            if pair.token_address < *config::WETH_ADDRESS {
-                                (trade.reserve0, trade.reserve1)
-                            } else {
-                                (trade.reserve1, trade.reserve0)
-                            };
-
-                        Some(IndexedUniswapV2Pair::new(
-                            token_reserve,
-                            weth_reserve,
-                            pair.token_address,
-                            *pair_address,
-                        ))
-                    }
-                    None => None,
-                })
-                .collect(),
-            None,
-        )
-    }
-}
 
 pub trait Indexer<T, P>
 where
@@ -101,16 +19,13 @@ mod tests {
     use super::*;
 
     use crate::{
-        abi::IUniswapV2Pair, indexer::BlockBuilder,
+        primitives::{BlockBuilder, BlockMessage, DexPair, IndexedTrade, Pair},
         providers::rpc_provider::new_http_signer_provider,
     };
 
-    use alloy::{
-        primitives::{address, uint},
-        rpc::types::eth::Filter,
-        sol_types::SolEvent,
-    };
+    use alloy::{primitives::address, rpc::types::eth::Filter};
     use eyre::Result;
+    use std::sync::Arc;
 
     #[tokio::test]
     pub async fn test_from_block() -> Result<()> {
@@ -121,30 +36,39 @@ mod tests {
         let logs_filter = Filter::new()
             .from_block(block_number)
             .to_block(block_number)
-            .event_signature(vec![
-                IUniswapV2Pair::Sync::SIGNATURE_HASH,
-                IUniswapV2Pair::Swap::SIGNATURE_HASH,
-            ]);
+            .event_signature(IndexedTrade::event_signature_hashes());
 
         let logs = rpc_provider.get_logs(&logs_filter).await?;
 
-        let parsed_block = BlockBuilder::new(block_number, block_timestamp, &logs)
-            .build(&rpc_provider)
-            .await?;
+        let parsed_block = BlockBuilder::build_many(
+            vec![BlockBuilder::new(block_number, block_timestamp, &logs)],
+            &rpc_provider,
+        )
+        .await?
+        .swap_remove(0);
 
-        let result = IndexedBlockMessage::from_block(&parsed_block);
+        let result = BlockMessage::from(parsed_block);
 
         assert_eq!(result.block_number, block_number);
-        assert_eq!(result.uniswap_v2_pairs.len(), 4);
+        assert_eq!(result.pairs.len(), 9);
 
         let pair = result
-            .uniswap_v2_pairs
+            .pairs
             .into_iter()
-            .find(|pair| pair.pair_address == address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+            .find_map(|pair| match pair {
+                Pair::UniswapV2(pair)
+                    if *pair.address() == address!("c1c52be5c93429be50f5518a582f690d0fc0528a") =>
+                {
+                    Some(pair)
+                }
+                _ => None,
+            })
             .expect("Expected trades for pair");
 
-        assert_eq!(pair.weth_reserve, uint!(24241863659908185248_U256));
-        assert_eq!(pair.token_reserve, uint!(43340478928260732_U256));
+        assert_eq!(
+            *pair.token_address(),
+            address!("F7669AC505D8Eb518103fEDa96A7A12737794492")
+        );
 
         Ok(())
     }

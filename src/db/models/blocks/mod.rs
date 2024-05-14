@@ -7,7 +7,7 @@ use rusqlite::{named_params, Transaction};
 pub struct Block {
     pub number: U64,
     pub timestamp: U64,
-    pub uniswap_v2_pairs: serde_json::Value,
+    pub pair_ticks: serde_json::Value,
 }
 
 impl Block {
@@ -16,7 +16,7 @@ impl Block {
             .execute(named_params! {
                 ":number": self.number,
                 ":timestamp": self.timestamp,
-                ":uniswap_v2_pairs": self.uniswap_v2_pairs,
+                ":pair_ticks": self.pair_ticks,
             })
             .map_err(Into::into)
             .and_then(|n| {
@@ -49,7 +49,7 @@ impl From<crate::primitives::Block> for Block {
         Self {
             number: value.block_number.into(),
             timestamp: value.block_timestamp.into(),
-            uniswap_v2_pairs: serde_json::to_value(value.uniswap_v2_pairs).unwrap(),
+            pair_ticks: serde_json::to_value(value.pair_ticks).unwrap(),
         }
     }
 }
@@ -59,7 +59,7 @@ impl From<&crate::primitives::Block> for Block {
         Self {
             number: value.block_number.into(),
             timestamp: value.block_timestamp.into(),
-            uniswap_v2_pairs: serde_json::to_value(value.uniswap_v2_pairs.clone()).unwrap(),
+            pair_ticks: serde_json::to_value(value.pair_ticks.clone()).unwrap(),
         }
     }
 }
@@ -71,7 +71,7 @@ impl<'stmt> TryFrom<&rusqlite::Row<'stmt>> for Block {
         Ok(Self {
             number: row.get(0)?,
             timestamp: row.get(1)?,
-            uniswap_v2_pairs: row.get(2)?,
+            pair_ticks: row.get(2)?,
         })
     }
 }
@@ -90,7 +90,7 @@ mod tests {
         let block = Block {
             number: 1.into(),
             timestamp: 1.into(),
-            uniswap_v2_pairs: serde_json::json!({ "foo": "bar" }),
+            pair_ticks: serde_json::json!({ "foo": "bar" }),
         };
 
         {
@@ -111,22 +111,22 @@ mod tests {
             Block {
                 number: 1.into(),
                 timestamp: 1.into(),
-                uniswap_v2_pairs: serde_json::json!({ "foo": "bar" }),
+                pair_ticks: serde_json::json!({ "foo": "bar" }),
             },
             Block {
                 number: 2.into(),
                 timestamp: 2.into(),
-                uniswap_v2_pairs: serde_json::json!({ "foo": "bar" }),
+                pair_ticks: serde_json::json!({ "foo": "bar" }),
             },
             Block {
                 number: 3.into(),
                 timestamp: 3.into(),
-                uniswap_v2_pairs: serde_json::json!({ "foo": "bar" }),
+                pair_ticks: serde_json::json!({ "foo": "bar" }),
             },
             Block {
                 number: 4.into(),
                 timestamp: 4.into(),
-                uniswap_v2_pairs: serde_json::json!({ "foo": "bar" }),
+                pair_ticks: serde_json::json!({ "foo": "bar" }),
             },
         ];
 

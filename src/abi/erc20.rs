@@ -13,6 +13,8 @@ sol! {
     }
 }
 
+// TODO: used by disabled trace code
+#[allow(dead_code)]
 pub fn approve_tx_request(
     signer_address: Address,
     token_address: Address,
@@ -27,6 +29,8 @@ pub fn approve_tx_request(
         .with_input(data.abi_encode().into())
 }
 
+// TODO: used by disabled trace code
+#[allow(dead_code)]
 pub fn balance_of_tx_request(
     signer_address: Address,
     token_address: Address,

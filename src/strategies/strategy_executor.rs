@@ -1,8 +1,9 @@
-use super::{uniswap_v2_dex_provider, Strategy};
+use super::Strategy;
 
 use crate::{
-    indexer::{IndexedBlockMessage, ResolutionTimestamp, TimePriceBarStore},
-    trade_controller::{Trade, TradeController, TradeControllerRequest, TradeRequestIntent},
+    indexer::{ResolutionTimestamp, TimePriceBarStore},
+    primitives::BlockMessage,
+    trade_controller::{Trade, TradeController, TradeRequest, TradeRequestOp},
 };
 
 use alloy::{
@@ -41,7 +42,7 @@ where
 
     pub async fn on_indexed_block_message(
         &self,
-        indexed_block_message: IndexedBlockMessage,
+        block_message: BlockMessage,
         time_price_bar_store: &TimePriceBarStore,
     ) -> Result<()> {
         let mut pending_tx_tasks = JoinSet::new();
@@ -52,29 +53,27 @@ where
             let time_price_bars = time_price_bar_store.time_price_bars().read().unwrap();
 
             let resolution = time_price_bar_store.resolution();
-            let resolution_timestamp = ResolutionTimestamp::from_timestamp(
-                indexed_block_message.block_timestamp,
-                &resolution,
-            );
+            let resolution_timestamp =
+                ResolutionTimestamp::from_timestamp(block_message.block_timestamp, &resolution);
 
-            for pair in indexed_block_message.uniswap_v2_pairs.into_iter() {
-                if cfg!(feature = "local") && pair.pair_address != TARGET_PAIR_ADDRESS {
+            for pair in block_message.pairs.into_iter() {
+                if cfg!(feature = "local") && *pair.address() != TARGET_PAIR_ADDRESS {
                     continue;
                 }
 
-                let pair_time_price_bars = time_price_bars.get(&pair.pair_address).unwrap();
+                let pair_time_price_bars = time_price_bars.get(pair.address()).unwrap();
                 let trade_request = match trades
-                    .get(&pair.pair_address)
+                    .get(pair.address())
                     .and_then(|address_trades| address_trades.active().as_ref())
                 {
                     None => self
                         .strategy
                         .should_open_position(&pair_time_price_bars, &resolution_timestamp)
                         .map(|_| {
-                            uniswap_v2_dex_provider::make_open_trade_request(
-                                &pair,
-                                indexed_block_message.block_number,
-                                indexed_block_message.block_timestamp,
+                            TradeRequest::open(
+                                block_message.block_number,
+                                block_message.block_timestamp,
+                                pair,
                             )
                         }),
                     Some(Trade::Open(open_trade_metadata)) => self
@@ -87,12 +86,12 @@ where
                                 &resolution,
                             ),
                         )
-                        .and_then(|_| {
-                            uniswap_v2_dex_provider::make_close_trade_request(
-                                open_trade_metadata,
-                                &pair,
-                                indexed_block_message.block_number,
-                                indexed_block_message.block_timestamp,
+                        .map(|_| {
+                            TradeRequest::close(
+                                block_message.block_number,
+                                block_message.block_timestamp,
+                                pair,
+                                open_trade_metadata.indexed_trade().clone(),
                             )
                         }),
                     Some(trade) => {
@@ -106,18 +105,13 @@ where
                         let trade_controller = self.trade_controller.clone();
 
                         pending_tx_tasks.spawn(async move {
-                            debug!(
-                                block_number = indexed_block_message.block_number,
-                                pair_address = pair.pair_address.to_string(),
-                                "executing trade: {:?}",
-                                trade_request
-                            );
+                            debug!("executing trade request: {:?}", trade_request);
 
-                            let _ = match trade_request.intent() {
-                                TradeRequestIntent::Open { .. } => {
+                            let _ = match &trade_request.op {
+                                TradeRequestOp::Open => {
                                     trade_controller.open_position(trade_request).await
                                 }
-                                TradeRequestIntent::Close { .. } => {
+                                TradeRequestOp::Close(_) => {
                                     trade_controller.close_position(trade_request).await
                                 }
                             };
@@ -125,8 +119,8 @@ where
                     }
                     Err(err) => {
                         debug!(
-                            block_number = indexed_block_message.block_number,
-                            pair_address = pair.pair_address.to_string(),
+                            block_number = block_message.block_number,
+                            pair_address = pair.address().to_string(),
                             "skipped trade execution: {:?}",
                             err
                         );
@@ -140,7 +134,7 @@ where
             while let Some(pending_tx_result) = pending_tx_tasks.join_next().await {
                 let _ = pending_tx_result.inspect_err(|err| {
                     error!(
-                        block_number = indexed_block_message.block_number,
+                        block_number = block_message.block_number,
                         "join set execution error: {:?}", err
                     );
                 });

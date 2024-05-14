@@ -6,7 +6,7 @@ use eyre::{eyre, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Trade {
     PendingOpen,
     Open(TradeMetadata),
