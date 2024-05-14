@@ -1,16 +1,14 @@
 use crate::{
-    db::BlockModel, primitives::Block, providers::RpcProvider,
-    strategies::StrategyExecutor,
+    db::BlockModel, primitives::Block, providers::RpcProvider, strategies::StrategyExecutor,
 };
 
 use super::{
-    super::{time_price_bar_store::TimePriceBarStore, IndexedBlockMessage, Indexer, Resolution},
+    super::{time_price_bar_store::TimePriceBarStore, Indexer, Resolution},
     BlockChunk, BlockChunkSource,
 };
 
 use alloy::{
-    network::Ethereum, primitives::BlockNumber, providers::Provider,
-    transports::Transport,
+    network::Ethereum, primitives::BlockNumber, providers::Provider, transports::Transport,
 };
 
 use eyre::{eyre, Result};
@@ -127,7 +125,7 @@ where
 }
 
 async fn execute_strategy_for_block<T, P>(
-    parsed_block: &Block,
+    parsed_block: Block,
     rpc_provider: Arc<RpcProvider<T, P>>,
     strategy_executor: Arc<StrategyExecutor<T, P>>,
     time_price_bar_store: Arc<TimePriceBarStore>,
@@ -140,10 +138,8 @@ where
         .insert_block(Arc::clone(&rpc_provider), &parsed_block)
         .await?;
 
-    let indexed_block_message = IndexedBlockMessage::from_block(&parsed_block);
-
     strategy_executor
-        .on_indexed_block_message(indexed_block_message, &time_price_bar_store)
+        .on_indexed_block_message(parsed_block.into(), &time_price_bar_store)
         .await?;
 
     Ok(())
@@ -166,7 +162,6 @@ where
     let mut chunk_buffer: BTreeMap<BlockNumber, BlockChunk> = BTreeMap::new();
 
     while let Some(parsed_block_chunk) = parsed_block_chunk_receiver.recv().await {
-
         // Write the chunk to DB if required.
         if matches!(parsed_block_chunk.source, BlockChunkSource::Rpc) {
             let mut conn = db_provider.get()?;
@@ -186,7 +181,7 @@ where
                 // process the chunk
                 for block in parsed_block_chunk.data {
                     execute_strategy_for_block(
-                        &block,
+                        block,
                         Arc::clone(&rpc_provider),
                         Arc::clone(&strategy_executor),
                         Arc::clone(&time_price_bar_store),
@@ -204,7 +199,7 @@ where
                     let (block_number, parsed_block_chunk) = chunk_buffer.pop_first().unwrap();
                     for block in parsed_block_chunk.data {
                         execute_strategy_for_block(
-                            &block,
+                            block,
                             Arc::clone(&rpc_provider),
                             Arc::clone(&strategy_executor),
                             Arc::clone(&time_price_bar_store),
@@ -232,8 +227,7 @@ where
     T: Transport + Clone,
     P: Provider<T, Ethereum> + 'static,
 {
-    async fn exec(&mut self, strategy_executor: StrategyExecutor<T, P>) -> Result<()>
-    {
+    async fn exec(&mut self, strategy_executor: StrategyExecutor<T, P>) -> Result<()> {
         let (block_chunk_sender, block_chunk_receiver) = channel(PARSED_BLOCK_CHANNEL_CAPACITY);
 
         let strategy_executor_join_handle = {

@@ -75,8 +75,8 @@ impl<'stmt> TryFrom<&rusqlite::Row<'stmt>> for BacktestClosedTrade {
 
 #[cfg(test)]
 mod tests {
-    use super::NewBacktestClosedTrade;
-    use crate::db::{connect as connect_db, models::BacktestClosedTrade};
+    use super::{BacktestClosedTrade, NewBacktestClosedTrade};
+    use crate::db::connect as connect_db;
 
     use eyre::Result;
 

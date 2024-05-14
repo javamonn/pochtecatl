@@ -1,85 +1,16 @@
-use super::{BlockPriceBar, Indicators};
+use super::Indicators;
+use crate::primitives::TickData;
 
 use alloy::primitives::BlockNumber;
 
-use fraction::{GenericFraction, ToPrimitive};
+use fraction::{BigUint, GenericFraction, Zero};
+use lazy_static::lazy_static;
 use std::collections::BTreeMap;
-use tracing::warn;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TimePriceBarData {
-    pub open: GenericFraction<u128>,
-    pub high: GenericFraction<u128>,
-    pub low: GenericFraction<u128>,
-    pub close: GenericFraction<u128>,
-}
-
-impl TimePriceBarData {
-    #[cfg(test)]
-    pub fn new(
-        open: GenericFraction<u128>,
-        high: GenericFraction<u128>,
-        low: GenericFraction<u128>,
-        close: GenericFraction<u128>,
-    ) -> Self {
-        Self {
-            open,
-            high,
-            low,
-            close,
-        }
-    }
-
-    pub fn reduce<'a>(
-        data: impl Iterator<Item = &'a TimePriceBarData>,
-    ) -> Option<TimePriceBarData> {
-        data.fold(None, |acc, price_bar| match acc {
-            None => Some(price_bar.clone()),
-            Some(mut acc) => {
-                if price_bar.high > acc.high {
-                    acc.high = price_bar.high
-                }
-                if price_bar.low < acc.low {
-                    acc.low = price_bar.low
-                }
-                acc.close = price_bar.close;
-
-                Some(acc)
-            }
-        })
-    }
-
-    pub fn is_negative(&self) -> bool {
-        self.close < self.open
-    }
-
-    pub fn close(&self) -> f64 {
-        self.close.to_f64().unwrap_or_else(|| {
-            warn!(
-                "Unable to derive close price for time price bar: {:?}",
-                self
-            );
-            f64::NAN
-        })
-    }
-}
-
-impl From<BlockPriceBar> for TimePriceBarData {
-    fn from(value: BlockPriceBar) -> Self {
-        Self {
-            open: value.open,
-            high: value.high,
-            low: value.low,
-            close: value.close,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct FinalizedTimePriceBar {
-    pub data: TimePriceBarData,
+    pub data: TickData,
     pub indicators: Indicators,
-    pub close: f64,
     pub start_block_number: BlockNumber,
     pub end_block_number: BlockNumber,
 }
@@ -88,7 +19,7 @@ impl FinalizedTimePriceBar {
     pub fn new(
         start_block_number: BlockNumber,
         end_block_number: BlockNumber,
-        data: TimePriceBarData,
+        data: TickData,
         indicators: Indicators,
     ) -> Self {
         Self {
@@ -96,30 +27,24 @@ impl FinalizedTimePriceBar {
             indicators,
             start_block_number,
             end_block_number,
-            close: data.close(),
         }
     }
 
-    pub fn data(&self) -> &TimePriceBarData {
+    pub fn data(&self) -> &TickData {
         &self.data
     }
 
     pub fn indicators(&self) -> &Indicators {
         &self.indicators
     }
-
-    pub fn close(&self) -> f64 {
-        self.close
-    }
 }
 
 // Holds individual BlockPriceBars until the underlying block range has been finalized
 #[derive(Debug)]
 pub struct PendingTimePriceBar {
-    pub data: Option<TimePriceBarData>,
+    pub data: Option<TickData>,
     pub indicators: Option<Indicators>,
-    pub close: Option<f64>,
-    pub block_price_bars: BTreeMap<BlockNumber, TimePriceBarData>,
+    pub block_price_bars: BTreeMap<BlockNumber, TickData>,
 }
 
 impl PendingTimePriceBar {
@@ -127,7 +52,6 @@ impl PendingTimePriceBar {
         Self {
             block_price_bars: BTreeMap::new(),
             data: None,
-            close: None,
             indicators: None,
         }
     }
@@ -140,22 +64,12 @@ impl PendingTimePriceBar {
         self.block_price_bars.last_key_value().map(|(k, _)| k)
     }
 
-    pub fn data(&self) -> &Option<TimePriceBarData> {
+    pub fn data(&self) -> &Option<TickData> {
         &self.data
     }
 
     pub fn indicators(&self) -> &Option<Indicators> {
         &self.indicators
-    }
-
-    pub fn close(&self) -> f64 {
-        self.close.unwrap_or_else(|| {
-            warn!(
-                "Unable to derive close price for time price bar: {:?}",
-                self
-            );
-            f64::NAN
-        })
     }
 
     pub fn prune_to_reorged_block_number(&mut self, reorged_block_number: BlockNumber) {
@@ -167,8 +81,7 @@ impl PendingTimePriceBar {
             }
         }
 
-        self.data = TimePriceBarData::reduce(self.block_price_bars.values());
-        self.close = self.data.as_ref().map(|data| data.close());
+        self.data = TickData::reduce(self.block_price_bars.values());
         self.indicators = None;
     }
 
@@ -176,25 +89,23 @@ impl PendingTimePriceBar {
         self.indicators = Some(indicators);
     }
 
-    pub fn insert_block_price_bar_range<I: Iterator<Item=BlockNumber>>(
+    pub fn insert_block_price_bar_range<I: Iterator<Item = BlockNumber>>(
         &mut self,
         block_numbers: I,
-        data: &TimePriceBarData,
+        data: &TickData,
     ) {
         for block_number in block_numbers {
-            self.block_price_bars.insert(block_number, *data);
+            self.block_price_bars.insert(block_number, data.clone());
         }
 
-        self.data = TimePriceBarData::reduce(self.block_price_bars.values());
+        self.data = TickData::reduce(self.block_price_bars.values());
         self.indicators = None;
-        self.close = self.data.as_ref().map(|data| data.close());
     }
 
-    pub fn insert_block_price_bar(&mut self, block_number: BlockNumber, data: TimePriceBarData) {
+    pub fn insert_block_price_bar(&mut self, block_number: BlockNumber, data: TickData) {
         self.block_price_bars.insert(block_number, data);
-        self.data = TimePriceBarData::reduce(self.block_price_bars.values());
+        self.data = TickData::reduce(self.block_price_bars.values());
         self.indicators = None;
-        self.close = self.data.as_ref().map(|data| data.close());
     }
 
     pub fn as_finalized(&self) -> Option<FinalizedTimePriceBar> {
@@ -232,20 +143,17 @@ pub enum TimePriceBar {
     Finalized(FinalizedTimePriceBar),
 }
 
+lazy_static! {
+    static ref F_ZERO: GenericFraction<BigUint> = GenericFraction::zero();
+}
+
 impl TimePriceBar {
-    pub fn data(&self) -> Option<&TimePriceBarData> {
+    pub fn data(&self) -> Option<&TickData> {
         match self {
             TimePriceBar::Pending(pending_time_price_bar) => pending_time_price_bar.data().as_ref(),
             TimePriceBar::Finalized(finalized_time_price_bar) => {
                 Some(finalized_time_price_bar.data())
             }
-        }
-    }
-
-    pub fn close(&self) -> f64 {
-        match self {
-            TimePriceBar::Pending(pending_time_price_bar) => pending_time_price_bar.close(),
-            TimePriceBar::Finalized(finalized_time_price_bar) => finalized_time_price_bar.close(),
         }
     }
 
@@ -260,77 +168,70 @@ impl TimePriceBar {
         }
     }
 
-    pub fn end_block_number(&self) -> Option<&BlockNumber> {
-        match self {
-            TimePriceBar::Pending(pending_time_price_bar) => {
-                pending_time_price_bar.end_block_number()
-            }
-            TimePriceBar::Finalized(finalized_time_price_bar) => {
-                Some(&finalized_time_price_bar.end_block_number)
-            }
-        }
-    }
-
-    pub fn start_block_number(&self) -> Option<&BlockNumber> {
-        match self {
-            TimePriceBar::Pending(pending_time_price_bar) => {
-                pending_time_price_bar.start_block_number()
-            }
-            TimePriceBar::Finalized(finalized_time_price_bar) => {
-                Some(&finalized_time_price_bar.start_block_number)
-            }
-        }
+    pub fn close(&self) -> &GenericFraction<BigUint> {
+        self.data().map(|d| &d.close).unwrap_or_else(|| &F_ZERO)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::indexer::{Indicators, PendingTimePriceBar, TimePriceBarData};
+    use super::PendingTimePriceBar;
+    use crate::{indexer::Indicators, primitives::TickData};
 
     use eyre::{Ok, Result};
-    use fraction::GenericFraction;
+    use fraction::{GenericFraction, One};
 
     #[test]
     fn test_pending_time_price_bar_data() -> Result<()> {
         let mut time_price_bar = PendingTimePriceBar::new();
         time_price_bar.insert_block_price_bar(
             1,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(1_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 1_u128),
-                close: GenericFraction::new(1_u128, 1_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                0_u128.into(),
+            ),
         );
 
         assert_eq!(
-            time_price_bar.data().expect("Expected data but found None"),
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(1_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 1_u128),
-                close: GenericFraction::new(1_u128, 1_u128)
-            }
+            time_price_bar
+                .data()
+                .clone()
+                .expect("Expected data but found None"),
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                0_u128.into()
+            )
         );
 
         time_price_bar.insert_block_price_bar(
             2,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(2_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 2_u128),
-                close: GenericFraction::new(1_u128, 2_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(2_u128, 1_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                0_u128.into(),
+            ),
         );
 
         assert_eq!(
-            time_price_bar.data().expect("Expected data but found None"),
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(2_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 2_u128),
-                close: GenericFraction::new(1_u128, 2_u128)
-            }
+            time_price_bar
+                .data()
+                .clone()
+                .expect("Expected data but found None"),
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(2_u128, 1_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                0_u128.into()
+            )
         );
 
         Ok(())
@@ -341,22 +242,24 @@ mod tests {
         let mut time_price_bar = PendingTimePriceBar::new();
         time_price_bar.insert_block_price_bar(
             1,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(1_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 1_u128),
-                close: GenericFraction::new(1_u128, 1_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                0_u128.into(),
+            ),
         );
 
         time_price_bar.insert_block_price_bar(
             2,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(2_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 2_u128),
-                close: GenericFraction::new(1_u128, 2_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(2_u128, 1_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                0_u128.into(),
+            ),
         );
 
         assert_eq!(
@@ -380,52 +283,63 @@ mod tests {
         let mut time_price_bar = PendingTimePriceBar::new();
         time_price_bar.insert_block_price_bar(
             1,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(1_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 1_u128),
-                close: GenericFraction::new(1_u128, 1_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                0_u128.into(),
+            ),
         );
         time_price_bar.insert_block_price_bar(
             2,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(2_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 2_u128),
-                close: GenericFraction::new(1_u128, 2_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(2_u128, 1_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                0_u128.into(),
+            ),
         );
         time_price_bar.insert_block_price_bar(
             3,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 2_u128),
-                high: GenericFraction::new(3_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 3_u128),
-                close: GenericFraction::new(1_u128, 3_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(3_u128, 1_u128),
+                GenericFraction::new(1_u128, 3_u128),
+                GenericFraction::new(1_u128, 3_u128),
+                0_u128.into(),
+            ),
         );
 
         assert_eq!(
-            time_price_bar.data().expect("Expected data but found None"),
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(3_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 3_u128),
-                close: GenericFraction::new(1_u128, 3_u128)
-            }
+            time_price_bar
+                .data()
+                .clone()
+                .expect("Expected data but found None"),
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(3_u128, 1_u128),
+                GenericFraction::new(1_u128, 3_u128),
+                GenericFraction::new(1_u128, 3_u128),
+                0_u128.into()
+            )
         );
 
         time_price_bar.prune_to_reorged_block_number(2);
 
         assert_eq!(
-            time_price_bar.data().expect("Expected data but found None"),
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(1_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 1_u128),
-                close: GenericFraction::new(1_u128, 1_u128)
-            }
+            time_price_bar
+                .data()
+                .clone()
+                .expect("Expected data but found None"),
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                0_u128.into()
+            )
         );
         assert_eq!(
             time_price_bar
@@ -448,25 +362,30 @@ mod tests {
         let mut time_price_bar = PendingTimePriceBar::new();
         time_price_bar.insert_block_price_bar(
             1,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(1_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 1_u128),
-                close: GenericFraction::new(1_u128, 1_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(1_u128, 1_u128),
+                0_u128.into(),
+            ),
         );
 
         time_price_bar.insert_block_price_bar(
             2,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(2_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 2_u128),
-                close: GenericFraction::new(1_u128, 2_u128),
-            },
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(2_u128, 1_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                0_u128.into(),
+            ),
         );
 
-        time_price_bar.set_indicators(Indicators::new(None, (1.0, 1.0)));
+        time_price_bar.set_indicators(Indicators::new(
+            None,
+            (GenericFraction::one(), GenericFraction::one()),
+        ));
 
         let finalized = time_price_bar
             .as_finalized()
@@ -476,14 +395,18 @@ mod tests {
         assert_eq!(finalized.end_block_number, 2);
         assert_eq!(
             finalized.data,
-            TimePriceBarData {
-                open: GenericFraction::new(1_u128, 1_u128),
-                high: GenericFraction::new(2_u128, 1_u128),
-                low: GenericFraction::new(1_u128, 2_u128),
-                close: GenericFraction::new(1_u128, 2_u128)
-            }
+            TickData::new(
+                GenericFraction::new(1_u128, 1_u128),
+                GenericFraction::new(2_u128, 1_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                GenericFraction::new(1_u128, 2_u128),
+                0_u128.into()
+            )
         );
-        assert_eq!(finalized.indicators.ema, (1.0, 1.0));
+        assert_eq!(
+            finalized.indicators.ema,
+            (GenericFraction::one(), GenericFraction::one())
+        );
         assert_eq!(finalized.indicators.bollinger_bands, None);
 
         Ok(())

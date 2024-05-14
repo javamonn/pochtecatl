@@ -1,4 +1,4 @@
 INSERT INTO blocks 
-  (number, timestamp, uniswap_v2_pairs) 
+  (number, timestamp, pair_ticks) 
 VALUES 
-  (:number, :timestamp, :uniswap_v2_pairs);
+  (:number, :timestamp, :pair_ticks);

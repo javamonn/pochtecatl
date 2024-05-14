@@ -1,18 +1,30 @@
 use super::{Resolution, ResolutionTimestamp, TimePriceBar};
 
+use fraction::{GenericFraction, Zero};
+use lazy_static::lazy_static;
+use num_bigint::BigUint;
 use std::collections::BTreeMap;
 use tracing::warn;
 
-pub const INDICATOR_EMA_SMOOTHING_FACTOR: f64 = 2.0 / (9.0 + 1.0);
 pub const INDICATOR_BB_PERIOD: u64 = 20;
-pub const INDICATOR_BB_STD_DEV: f64 = 2.0;
+pub const INDICATOR_EMA_SMOOTHING_FACTOR: f64 = 2.0 / (9.0 + 1.0);
+pub const SQRT_PRECISION: u32 = 18;
 
-#[derive(Debug, Clone, Copy)]
+type F = GenericFraction<BigUint>;
+
+lazy_static! {
+    pub static ref F_INDICATOR_BB_PERIOD: GenericFraction<BigUint> =
+        GenericFraction::new(BigUint::from(INDICATOR_BB_PERIOD), BigUint::from(1_u64));
+    pub static ref F_INDICATOR_BB_STD_DEV: GenericFraction<BigUint> =
+        GenericFraction::new(BigUint::from(2_u64), BigUint::from(1_u64));
+}
+
+#[derive(Debug, Clone)]
 pub struct Indicators {
     // sma, upper band, lower band
-    pub bollinger_bands: Option<(f64, f64, f64)>,
+    pub bollinger_bands: Option<(F, F, F)>,
     // ema, slope
-    pub ema: (f64, f64),
+    pub ema: (F, F),
 }
 
 impl Indicators {
@@ -20,23 +32,29 @@ impl Indicators {
         timestamp: &ResolutionTimestamp,
         resolution: &Resolution,
         data: &BTreeMap<ResolutionTimestamp, TimePriceBar>,
-    ) -> Option<(f64, f64, f64)> {
+    ) -> Option<(F, F, F)> {
         let close_prices = data
             .range(timestamp.decrement(resolution, INDICATOR_BB_PERIOD - 1)..=*timestamp)
-            .map(|(_, time_price_bar)| time_price_bar.close());
+            .filter_map(|(_, time_price_bar)| time_price_bar.data().map(|d| d.close.clone()));
 
         if close_prices.clone().count() != INDICATOR_BB_PERIOD as usize {
             None
         } else {
-            let sma = close_prices.clone().sum::<f64>() / INDICATOR_BB_PERIOD as f64;
-            let variance = close_prices.map(|price| (price - sma).powi(2)).sum::<f64>()
-                / INDICATOR_BB_PERIOD as f64;
-            let std_dev = variance.sqrt();
+            let sma = close_prices.clone().sum::<F>() / F_INDICATOR_BB_PERIOD.clone();
+            let variance = close_prices
+                .map(|price| {
+                    let p = price - sma.clone();
+                    p.clone() * p
+                })
+                .sum::<F>()
+                / F_INDICATOR_BB_PERIOD.clone();
+
+            let std_dev = variance.sqrt(SQRT_PRECISION);
 
             Some((
-                sma,
-                sma + (std_dev * INDICATOR_BB_STD_DEV),
-                sma - (std_dev * INDICATOR_BB_STD_DEV),
+                sma.clone(),
+                sma.clone() + (std_dev.clone() * F_INDICATOR_BB_STD_DEV.clone()),
+                sma - (std_dev * F_INDICATOR_BB_STD_DEV.clone()),
             ))
         }
     }
@@ -45,7 +63,7 @@ impl Indicators {
         timestamp: &ResolutionTimestamp,
         resolution: &Resolution,
         data: &BTreeMap<ResolutionTimestamp, TimePriceBar>,
-    ) -> (f64, f64) {
+    ) -> (F, F) {
         match (
             data.get(timestamp),
             data.get(&timestamp.previous(resolution)),
@@ -53,21 +71,25 @@ impl Indicators {
             (Some(time_price_bar), Some(prev_time_price_bar)) => {
                 let prev_ema = prev_time_price_bar
                     .indicators()
-                    .map(|i| i.ema.0)
-                    .unwrap_or(prev_time_price_bar.close());
-                let ema = ((time_price_bar.close() - prev_ema) * INDICATOR_EMA_SMOOTHING_FACTOR)
-                    + prev_ema;
-                (ema, ema - prev_ema)
+                    .map(|i| i.ema.0.clone())
+                    .unwrap_or_else(|| prev_time_price_bar.close().clone());
+                let time_price_bar_close = time_price_bar.close().clone();
+                let ema = ((time_price_bar_close - prev_ema.clone())
+                    * INDICATOR_EMA_SMOOTHING_FACTOR)
+                    + prev_ema.clone();
+                (ema.clone(), ema - prev_ema)
             }
-            (Some(time_price_bar), None) => (time_price_bar.close(), 0.0),
+            (Some(time_price_bar), None) => {
+                (time_price_bar.close().clone(), GenericFraction::zero())
+            }
             _ => {
                 warn!("No time price bar found at timestamp {:?}", timestamp);
-                (f64::NAN, 0.0)
+                (GenericFraction::zero(), GenericFraction::zero())
             }
         }
     }
 
-    pub fn new(bollinger_bands: Option<(f64, f64, f64)>, ema: (f64, f64)) -> Indicators {
+    pub fn new(bollinger_bands: Option<(F, F, F)>, ema: (F, F)) -> Indicators {
         Indicators {
             bollinger_bands,
             ema,
@@ -90,10 +112,12 @@ impl Indicators {
 mod tests {
     use std::collections::BTreeMap;
 
-    use fraction::GenericFraction;
+    use fraction::{GenericDecimal, GenericFraction, One, Zero};
+    use num_bigint::BigUint;
 
-    use crate::indexer::{
-        FinalizedTimePriceBar, Resolution, ResolutionTimestamp, TimePriceBar, TimePriceBarData,
+    use crate::{
+        indexer::{FinalizedTimePriceBar, Resolution, ResolutionTimestamp, TimePriceBar},
+        primitives::TickData,
     };
 
     use super::{Indicators, INDICATOR_BB_PERIOD};
@@ -116,13 +140,17 @@ mod tests {
                         TimePriceBar::Finalized(FinalizedTimePriceBar::new(
                             1,
                             1,
-                            TimePriceBarData::new(
+                            TickData::new(
                                 GenericFraction::new(1_u128, 1_u128),
                                 GenericFraction::new(1_u128, 1_u128),
                                 GenericFraction::new(1_u128, 1_u128),
                                 GenericFraction::new(idx as u128, 1_u128),
+                                0_u128.into(),
                             ),
-                            Indicators::new(None, (0.0, 0.0)),
+                            Indicators::new(
+                                None,
+                                (GenericFraction::zero(), GenericFraction::zero()),
+                            ),
                         )),
                     );
 
@@ -130,11 +158,27 @@ mod tests {
                 })
         };
 
-        let result = Indicators::bollinger_band(&mock_timestamp, &Resolution::FiveMinutes, &data);
+        let (sma, upper_band, lower_band) =
+            Indicators::bollinger_band(&mock_timestamp, &Resolution::FiveMinutes, &data)
+                .expect("Bollinger band not found");
 
         assert_eq!(
-            result,
-            Some((10.5, 22.032562594670797, -1.0325625946707966))
+            format!("{}", GenericDecimal::<BigUint, usize>::from_fraction(sma)),
+            "10.5"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                GenericDecimal::<BigUint, usize>::from_fraction(upper_band).set_precision(8)
+            ),
+            "22.03256259"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                GenericDecimal::<BigUint, usize>::from_fraction(lower_band).set_precision(8)
+            ),
+            "-1.03256259"
         );
     }
 
@@ -156,13 +200,17 @@ mod tests {
                         TimePriceBar::Finalized(FinalizedTimePriceBar::new(
                             1,
                             1,
-                            TimePriceBarData::new(
+                            TickData::new(
                                 GenericFraction::new(1_u128, 1_u128),
                                 GenericFraction::new(1_u128, 1_u128),
                                 GenericFraction::new(1_u128, 1_u128),
                                 GenericFraction::new(idx as u128, 1_u128),
+                                0_u128.into(),
                             ),
-                            Indicators::new(None, (0.0, 0.0)),
+                            Indicators::new(
+                                None,
+                                (GenericFraction::zero(), GenericFraction::zero()),
+                            ),
                         )),
                     );
 
@@ -184,13 +232,17 @@ mod tests {
                 TimePriceBar::Finalized(FinalizedTimePriceBar::new(
                     1,
                     1,
-                    TimePriceBarData::new(
+                    TickData::new(
                         GenericFraction::new(1_u128, 1_u128),
                         GenericFraction::new(1_u128, 1_u128),
                         GenericFraction::new(1_u128, 1_u128),
                         GenericFraction::new(1_u128, 1_u128),
+                        0_u128.into(),
                     ),
-                    Indicators::new(None, (5.0, 1.0)),
+                    Indicators::new(
+                        None,
+                        (GenericFraction::new(5_u64, 1_u64), GenericFraction::one()),
+                    ),
                 )),
             ),
             (
@@ -198,20 +250,28 @@ mod tests {
                 TimePriceBar::Finalized(FinalizedTimePriceBar::new(
                     1,
                     1,
-                    TimePriceBarData::new(
+                    TickData::new(
                         GenericFraction::new(1_u128, 1_u128),
                         GenericFraction::new(1_u128, 1_u128),
                         GenericFraction::new(1_u128, 1_u128),
                         GenericFraction::new(6_u128, 1_u128),
+                        0_u128.into(),
                     ),
-                    Indicators::new(None, (0.0, 1.0)),
+                    Indicators::new(None, (GenericFraction::zero(), GenericFraction::one())),
                 )),
             ),
         ]);
 
-        let result = Indicators::ema(&mock_timestamp, &Resolution::FiveMinutes, &data);
+        let (ema, slope) = Indicators::ema(&mock_timestamp, &Resolution::FiveMinutes, &data);
 
-        assert_eq!(result, (5.2, 0.20000000000000018));
+        assert_eq!(
+            format!("{}", GenericDecimal::<BigUint, usize>::from_fraction(ema)),
+            "5.2"
+        );
+        assert_eq!(
+            format!("{}", GenericDecimal::<BigUint, usize>::from_fraction(slope)),
+            "0.2"
+        );
     }
 
     #[test]
@@ -222,18 +282,27 @@ mod tests {
             TimePriceBar::Finalized(FinalizedTimePriceBar::new(
                 1,
                 1,
-                TimePriceBarData::new(
+                TickData::new(
                     GenericFraction::new(1_u128, 1_u128),
                     GenericFraction::new(1_u128, 1_u128),
                     GenericFraction::new(1_u128, 1_u128),
                     GenericFraction::new(6_u128, 1_u128),
+                    0_u128.into(),
                 ),
-                Indicators::new(None, (0.0, 1.0)),
+                Indicators::new(None, (GenericFraction::zero(), GenericFraction::one())),
             )),
         )]);
 
-        let result = Indicators::ema(&mock_timestamp, &Resolution::FiveMinutes, &data);
+        let (ema, slope) = Indicators::ema(&mock_timestamp, &Resolution::FiveMinutes, &data);
 
-        assert_eq!(result, (6.0, 0.0));
+        assert_eq!(
+            format!("{}", GenericDecimal::<BigUint, usize>::from_fraction(ema)),
+            "6"
+        );
+
+        assert_eq!(
+            format!("{}", GenericDecimal::<BigUint, usize>::from_fraction(slope)),
+            "0"
+        );
     }
 }

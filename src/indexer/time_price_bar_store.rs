@@ -1,4 +1,4 @@
-use super::{BlockPriceBar, Resolution, ResolutionTimestamp, TimePriceBars};
+use super::{Resolution, ResolutionTimestamp, TimePriceBars};
 use crate::{config, primitives::Block, providers::RpcProvider};
 
 use alloy::{
@@ -112,28 +112,24 @@ impl TimePriceBarStore {
             }
 
             // Insert new BlockPriceBar items into time_price_bars
-            for (pair_address, pair) in block.uniswap_v2_pairs.iter() {
-                if let Some(block_price_bar) = BlockPriceBar::from_uniswap_v2_pair(pair) {
-                    let time_price_bars = time_price_bars
-                        .entry(pair_address.clone())
-                        .or_insert_with(|| {
-                            TimePriceBars::new(self.retention_count, self.resolution)
-                        });
+            for (pair_address, pair) in block.pair_ticks.iter() {
+                let time_price_bars = time_price_bars
+                    .entry(pair_address.clone())
+                    .or_insert_with(|| TimePriceBars::new(self.retention_count, self.resolution));
 
-                    time_price_bars
-                        .insert_data(
-                            block.block_number,
-                            block_price_bar.into(),
-                            block.block_timestamp,
-                            finalized_timestamp,
+                time_price_bars
+                    .insert_data(
+                        block.block_number,
+                        pair.tick().clone(),
+                        block.block_timestamp,
+                        finalized_timestamp,
+                    )
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to insert new block price bar for pair {}",
+                            pair_address
                         )
-                        .wrap_err_with(|| {
-                            format!(
-                                "Failed to insert new block price bar for pair {}",
-                                pair_address
-                            )
-                        })?
-                }
+                    })?
             }
 
             // Prune any stale time price bars
@@ -188,14 +184,13 @@ impl TimePriceBarStore {
 mod tests {
     use super::TimePriceBarStore;
     use crate::{
-        abi::IUniswapV2Pair,
         config,
-        indexer::{Resolution, ResolutionTimestamp, BlockBuilder},
+        indexer::{Resolution, ResolutionTimestamp},
+        primitives::{Block, BlockBuilder, IndexedTrade},
         providers::{
             rpc_provider::{new_http_signer_provider, TTLCache},
             RpcProvider,
         },
-        primitives::Block
     };
 
     use alloy::{
@@ -203,7 +198,6 @@ mod tests {
         primitives::{address, uint, BlockNumber},
         providers::Provider,
         rpc::types::eth::Filter,
-        sol_types::SolEvent,
         transports::Transport,
     };
 
@@ -221,10 +215,7 @@ mod tests {
         let logs_filter = Filter::new()
             .from_block(block_number)
             .to_block(block_number)
-            .event_signature(vec![
-                IUniswapV2Pair::Sync::SIGNATURE_HASH,
-                IUniswapV2Pair::Swap::SIGNATURE_HASH,
-            ]);
+            .event_signature(IndexedTrade::event_signature_hashes());
 
         let (header, logs) = {
             let (header_result, logs_result) = tokio::join!(
@@ -238,9 +229,16 @@ mod tests {
             )
         };
 
-        BlockBuilder::new(block_number, header.timestamp.to::<u64>(), &logs)
-            .build(&rpc_provider)
-            .await
+        BlockBuilder::build_many(
+            vec![BlockBuilder::new(
+                block_number,
+                header.timestamp.to::<u64>(),
+                &logs,
+            )],
+            &rpc_provider,
+        )
+        .await
+        .map(|mut blocks| blocks.swap_remove(0))
     }
 
     #[tokio::test]
@@ -265,6 +263,7 @@ mod tests {
                 .await?,
             )
         };
+
 
         // test base case
         {

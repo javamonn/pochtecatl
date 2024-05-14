@@ -1,9 +1,18 @@
-pub use block_id::BlockId;
-pub use uniswap_v2_pair_trade::UniswapV2PairTrade;
-pub use uniswap_v2_pair::UniswapV2Pair;
-pub use block::Block;
+pub use block::{Block, BlockBuilder};
 
-mod uniswap_v2_pair_trade;
-mod block_id;
-mod uniswap_v2_pair;
+pub use dex::{IndexedTrade, Pair, PairBlockTick, PairInput};
+
+#[cfg(test)]
+pub use dex::{
+    DexIndexedTrade, DexPair, UniswapV2IndexedTrade, UniswapV2Pair, UniswapV2PairBlockTick,
+};
+
+pub use block_id::BlockId;
+pub use block_message::BlockMessage;
+pub use tick_data::TickData;
+
 mod block;
+mod block_id;
+mod block_message;
+mod dex;
+mod tick_data;

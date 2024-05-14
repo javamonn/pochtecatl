@@ -1,4 +1,4 @@
-use super::{ParsedTrade, TradeMetadata};
+use super::TradeMetadata;
 
 use crate::providers::RpcProvider;
 
