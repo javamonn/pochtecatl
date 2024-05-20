@@ -15,7 +15,7 @@ use alloy::{
 use eyre::Result;
 
 pub trait TradeControllerRequest {
-    fn pair_address(&self) -> &Address;
+    fn token_address(&self) -> &Address;
 
     async fn trace<T, P>(&self, rpc_provider: &RpcProvider<T, P>) -> Result<()>
     where
@@ -39,10 +39,19 @@ pub trait TradeControllerRequest {
         P: Provider<T, Ethereum> + 'static;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TradeRequestOp {
     Open,
     Close(IndexedTrade),
+}
+
+impl TradeRequestOp {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Open => "Open".to_string(),
+            Self::Close(_) => "Close".to_string(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -79,8 +88,8 @@ impl TradeRequest {
 }
 
 impl TradeControllerRequest for TradeRequest {
-    fn pair_address(&self) -> &Address {
-        self.pair.address()
+    fn token_address(&self) -> &Address {
+        self.pair.token_address()
     }
 
     async fn trace<T, P>(&self, rpc_provider: &RpcProvider<T, P>) -> Result<()>

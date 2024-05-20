@@ -1,4 +1,4 @@
-pub use block_range_indexer::BlockRangeIndexer;
+pub use block_range_indexer::{BlockRangeIndexer, BlockChunk};
 
 pub use indexer::Indexer;
 

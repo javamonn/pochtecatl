@@ -1,11 +1,7 @@
-use crate::{abi::multicall3, config};
+use crate::abi::multicall3::{self, multicall_tx_request};
 
 use alloy::{
-    network::{Ethereum, TransactionBuilder},
-    primitives::Bytes,
-    providers::Provider,
-    rpc::types::eth::{BlockId, TransactionRequest},
-    sol_types::SolCall,
+    network::Ethereum, providers::Provider, rpc::types::eth::BlockId, sol_types::SolCall,
     transports::Transport,
 };
 
@@ -31,15 +27,7 @@ where
     let chunk_len = chunk_iter.len();
 
     chunk_iter.enumerate().for_each(|(idx, chunk)| {
-        let tx = TransactionRequest::default()
-            .with_to((*config::MULTICALL3_ADDRESS).into())
-            .with_input(Bytes::from(
-                multicall3::aggregate3Call {
-                    calls: chunk.to_vec(),
-                }
-                .abi_encode(),
-            ));
-
+        let tx = multicall_tx_request(chunk.to_vec());
         let rpc_provider = Arc::clone(&rpc_provider);
         chunk_tasks.spawn(async move {
             rpc_provider

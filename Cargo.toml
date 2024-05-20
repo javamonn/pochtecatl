@@ -6,26 +6,8 @@ edition = "2021"
 [features]
 local = []
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-eyre = "0.6.12"
-fnv = "1.0.7"
-log = { version = "0.4.21", features = ["kv_unstable", "std", "serde"] }
-serde = { version = "1.0", default_features = false, features = ["derive", "alloc"] }
-serde_json = { version = "1.0", default_features = false, features = ["alloc"] }
-
-structured-logger = "1.0.3"
-tokio = { version = "1.37.0", features = ["full"] }
-lazy_static = "1.4.0"
-ruint = { version = "1.12.1", features = ["num-bigint"] }
-fraction = { version = "0.15.1", features = ["with-serde-support", "with-bigint", "with-approx"] }
-lru = "0.12.3"
-dotenvy = "0.15.7"
-hex = "0.4.3"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "json"] }
-
+# eth
 alloy = { git = "https://github.com/alloy-rs/alloy", rev = "bfd0fda", features = [
     "contract",
     "network",
@@ -47,11 +29,31 @@ alloy = { git = "https://github.com/alloy-rs/alloy", rev = "bfd0fda", features =
     "signer-wallet",
     # "signer-yubihsm",
 ] }
-url = "2.5.0"
-reqwest = "0.12.4"
+num-bigint = { version = "0.4.5", features = ["serde"] }
+fixed = { version = "1.27.0", features = ["serde"] }
+ruint = { version = "1.12.1", features = ["num-bigint"] }
+
+# async
+tokio = { version = "1.37.0", features = ["full"] }
+
+# db
 rusqlite = { version = "0.31.0", features = ["bundled", "serde_json", "unlock_notify"] }
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.24.0"
+
+# misc
+url = "2.5.0"
+reqwest = "0.12.4"
 fallible-iterator = "0.3.0"
-num-bigint = { version = "0.4.5", features = ["serde"] }
-approx = "0.5.1"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "json"] }
+eyre = "0.6.12"
+fnv = "1.0.7"
+serde = { version = "1.0", default_features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default_features = false, features = ["alloc", "arbitrary_precision"] }
+lazy_static = "1.4.0"
+lru = "0.12.3"
+dotenvy = "0.15.7"
+hex = "0.4.3"
+
+

@@ -2,6 +2,7 @@ use super::Strategy;
 use crate::indexer::{Indicators, ResolutionTimestamp, TimePriceBars};
 
 use eyre::{eyre, Result};
+use tracing::debug;
 
 pub struct MomentumStrategy {}
 
@@ -44,7 +45,7 @@ impl Strategy for MomentumStrategy {
                                 close,
                                 band_mean
                             ))
-                        } else if ema_slope.is_sign_negative() {
+                        } else if ema_slope.is_negative() {
                             Err(eyre!("EMA slope {:?} is negative", ema_slope))
                         } else {
                             // open a trade
@@ -81,9 +82,9 @@ impl Strategy for MomentumStrategy {
                     });
 
                 match time_price_bar.indicators() {
-                    Some(Indicators { ema: (ema, _), .. }) if has_crossed_sma => {
+                    Some(Indicators { ema: (ema, _), .. }) if !has_crossed_sma => {
                         if time_price_bar.close() > ema {
-                            Err(eyre!("Close is above EMA after crossing SMA"))
+                            Err(eyre!("Close is above EMA after entry"))
                         } else {
                             // Close is below EMA after crossing SMA, close the trade
                             Ok(())
@@ -94,7 +95,7 @@ impl Strategy for MomentumStrategy {
                         ..
                     }) => {
                         if time_price_bar.close() > sma {
-                            Err(eyre!("Close is above SMA after entry"))
+                            Err(eyre!("Close is above SMA after crossing EMA"))
                         } else {
                             // Close is below SMA after entry, close the trade
                             Ok(())

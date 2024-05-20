@@ -10,7 +10,6 @@ use alloy::{
     primitives::BlockNumber,
     providers::Provider,
     rpc::types::eth::{Filter, Log as RpcLog},
-    sol_types::SolEvent,
     transports::Transport,
 };
 
@@ -61,7 +60,7 @@ impl BlockChunk {
         }
     }
 
-    async fn fetch_from_rpc<T, P>(
+    pub async fn fetch_from_rpc<T, P>(
         rpc_provider: &RpcProvider<T, P>,
         start_block_number: BlockNumber,
         end_block_number: BlockNumber,

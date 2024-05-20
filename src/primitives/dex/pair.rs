@@ -21,10 +21,12 @@ where
     fn decode(&self, result: Vec<multicall3::Result>) -> Result<P>;
 }
 
+#[derive(Debug)]
 pub enum PairInput {
     UniswapV2(UniswapV2PairInput),
     UniswapV3(UniswapV3PairInput),
 }
+
 impl PairInput {
     pub fn address(&self) -> &Address {
         match self {
@@ -45,6 +47,18 @@ impl PairInput {
             Self::UniswapV2(pair_input) => pair_input.decode(result).map(Into::into),
             Self::UniswapV3(pair_input) => pair_input.decode(result).map(Into::into),
         }
+    }
+}
+
+impl From<UniswapV2PairInput> for PairInput {
+    fn from(pair_input: UniswapV2PairInput) -> Self {
+        Self::UniswapV2(pair_input)
+    }
+}
+
+impl From<UniswapV3PairInput> for PairInput {
+    fn from(pair_input: UniswapV3PairInput) -> Self {
+        Self::UniswapV3(pair_input)
     }
 }
 

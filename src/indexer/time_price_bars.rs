@@ -335,25 +335,26 @@ impl TimePriceBars {
 
     pub fn is_stale(&self, ts: ResolutionTimestamp) -> bool {
         self.data.last_key_value().map_or(true, |(last_ts, _)| {
-            (ts.0 - last_ts.0 / self.resolution.offset()) > self.retention_count
+            ((ts.0 - last_ts.0) / self.resolution.offset()) > self.retention_count
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::TimePriceBars;
     use crate::{
         indexer::{
             time_price_bar_indicators::INDICATOR_BB_PERIOD, Resolution, ResolutionTimestamp,
             TimePriceBar,
         },
-        primitives::TickData,
+        primitives::{u32f96_from_u256_frac, TickData},
     };
 
-    use super::TimePriceBars;
+    use alloy::primitives::{uint, U256};
 
     use eyre::Result;
-    use fraction::GenericFraction;
+    use fixed::types::U32F96;
 
     #[test]
     pub fn test_insert_data() -> Result<()> {
@@ -364,10 +365,10 @@ mod tests {
             ResolutionTimestamp::from_timestamp(mock_timestamp, &Resolution::FiveMinutes);
 
         let mock_data = TickData::new(
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
+            U32F96::ONE,
+            U32F96::ONE,
+            U32F96::ONE,
+            U32F96::ONE,
             0_u128.into(),
         );
 
@@ -421,10 +422,10 @@ mod tests {
         let mock_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(mock_timestamp, &Resolution::FiveMinutes);
         let mock_data = TickData::new(
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
+            U32F96::ONE,
+            U32F96::ONE,
+            U32F96::ONE,
+            U32F96::ONE,
             0_u128.into(),
         );
 
@@ -471,10 +472,10 @@ mod tests {
         let mock_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(mock_timestamp, &Resolution::FiveMinutes);
         let mock_data = TickData::new(
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
-            GenericFraction::new(1_u128, 1_u128),
+            U32F96::ONE,
+            U32F96::ONE,
+            U32F96::ONE,
+            U32F96::ONE,
             0_u128.into(),
         );
         let mut time_price_bars = TimePriceBars::new(5, Resolution::FiveMinutes);
@@ -495,10 +496,10 @@ mod tests {
             time_price_bars.insert_data(
                 i,
                 TickData::new(
-                    GenericFraction::new(1_u128, 1_u128),
-                    GenericFraction::new(1_u128, 1_u128),
-                    GenericFraction::new(1_u128, 1_u128),
-                    GenericFraction::new(i as u128, 1_u128),
+                    U32F96::ONE,
+                    U32F96::ONE,
+                    U32F96::ONE,
+                    u32f96_from_u256_frac(U256::from(i), uint!(1_U256)),
                     0_u128.into(),
                 ),
                 i * Resolution::FiveMinutes.offset() + 10000,

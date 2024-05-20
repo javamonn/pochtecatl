@@ -12,7 +12,7 @@ use alloy::{
 };
 
 use eyre::Result;
-use tracing::{instrument, warn};
+use tracing::{instrument, debug};
 
 pub struct BlockBuilder {
     pub block_number: BlockNumber,
@@ -58,7 +58,7 @@ impl BlockBuilder {
             .collect::<Vec<_>>();
 
         let pairs = rpc_provider
-            .indexed_trade_provider()
+            .dex_provider()
             .get_pairs(
                 pair_inputs,
                 block_builders.last().map(|b| b.block_number.into()),
@@ -76,11 +76,9 @@ impl BlockBuilder {
                     ),
                     |mut block, trade| {
                         match pairs.get(trade.pair_address()) {
-                            Some(pair) => {
-                                block.add_trade(trade, pair.token_address());
-                            }
+                            Some(pair) => block.add_trade(trade, pair),
                             None => {
-                                warn!(
+                                debug!(
                                     pair_address = trade.pair_address().to_string(),
                                     "invalid pair",
                                 );
@@ -104,7 +102,7 @@ mod tests {
         config,
         primitives::{
             DexIndexedTrade, IndexedTrade, PairBlockTick, TickData, UniswapV2IndexedTrade,
-            UniswapV2PairBlockTick,
+            UniswapV2Pair, UniswapV2PairBlockTick,
         },
         providers::rpc_provider::new_http_signer_provider,
     };
@@ -115,8 +113,8 @@ mod tests {
     };
 
     use eyre::Result;
-    use fraction::BigUint;
     use std::sync::Arc;
+    use num_bigint::BigUint;
 
     #[tokio::test]
     async fn test_build_many() -> Result<()> {
@@ -139,9 +137,10 @@ mod tests {
         assert_eq!(block.block_timestamp, mock_timestamp);
         assert_eq!(block.pair_ticks.len(), 9);
 
+        let pair_address = address!("c1c52be5c93429be50f5518a582f690d0fc0528a");
         let pair = block
             .pair_ticks
-            .get(&address!("c1c52be5c93429be50f5518a582f690d0fc0528a"))
+            .get(&pair_address)
             .expect("Expected trades for pair");
 
         let expected_trades = vec![
@@ -171,7 +170,7 @@ mod tests {
         assert_eq!(
             *pair,
             PairBlockTick::UniswapV2(UniswapV2PairBlockTick {
-                token_address,
+                pair: UniswapV2Pair::new(pair_address, *config::WETH_ADDRESS, token_address),
                 makers: vec![
                     address!("1Fba6b0BBae2B74586fBA407Fb45Bd4788B7b130"),
                     address!("7381C38985dA304eBA18fCef5E1f6e9fA0798b84")

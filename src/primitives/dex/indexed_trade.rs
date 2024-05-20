@@ -1,21 +1,20 @@
 use super::{UniswapV2IndexedTrade, UniswapV3IndexedTrade};
 
 use alloy::{
-    primitives::{Address, FixedBytes},
+    primitives::{Address, FixedBytes, U256},
     rpc::types::eth::{Log, TransactionReceipt},
 };
 
-use fraction::GenericFraction;
-use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
+use fixed::types::U32F96;
 
 pub trait DexIndexedTrade {
     // get the token price before the trade
-    fn token_price_before(&self, token_address: &Address) -> GenericFraction<BigUint>;
+    fn token_price_before(&self, token_address: &Address) -> U32F96;
     // get the token price after the trade
-    fn token_price_after(&self, token_address: &Address) -> GenericFraction<BigUint>;
+    fn token_price_after(&self, token_address: &Address) -> U32F96;
     // get the total weth volume of the trade
-    fn weth_volume(&self, token_address: &Address) -> BigUint;
+    fn weth_volume(&self, token_address: &Address) -> U256;
     // get the pair address
     fn pair_address(&self) -> &Address;
     // get the event signature hashes required for parsing the trade
@@ -58,21 +57,21 @@ pub enum IndexedTrade {
 }
 
 impl IndexedTrade {
-    pub fn weth_volume(&self, token_address: &Address) -> BigUint {
+    pub fn weth_volume(&self, token_address: &Address) -> U256 {
         match self {
             IndexedTrade::UniswapV2(trade) => trade.weth_volume(token_address),
             IndexedTrade::UniswapV3(trade) => trade.weth_volume(token_address),
         }
     }
 
-    pub fn token_price_before(&self, token_address: &Address) -> GenericFraction<BigUint> {
+    pub fn token_price_before(&self, token_address: &Address) -> U32F96 {
         match self {
             IndexedTrade::UniswapV2(trade) => trade.token_price_before(token_address),
             IndexedTrade::UniswapV3(trade) => trade.token_price_before(token_address),
         }
     }
 
-    pub fn token_price_after(&self, token_address: &Address) -> GenericFraction<BigUint> {
+    pub fn token_price_after(&self, token_address: &Address) -> U32F96 {
         match self {
             IndexedTrade::UniswapV2(trade) => trade.token_price_after(token_address),
             IndexedTrade::UniswapV3(trade) => trade.token_price_after(token_address),

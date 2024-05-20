@@ -23,7 +23,7 @@ use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
     task::JoinSet,
 };
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 pub struct BlockRangeIndexer<T, P>
 where
@@ -176,8 +176,13 @@ where
 
         // If the chunk is the next chunk we're looking for, execute the strategy for
         // it and all buffered contiguous chunks. Otherwise, buffer the chunk.
-        match parsed_block_chunk.data.first().map(|b| b.block_number) {
-            Some(chunk_block_number) if chunk_block_number == next_block_number => {
+        match (
+            parsed_block_chunk.data.first().map(|b| b.block_number),
+            parsed_block_chunk.data.last().map(|b| b.block_number),
+        ) {
+            (Some(chunk_start_block_number), Some(chunk_end_block_number))
+                if chunk_start_block_number == next_block_number =>
+            {
                 // process the chunk
                 for block in parsed_block_chunk.data {
                     execute_strategy_for_block(
@@ -188,15 +193,27 @@ where
                     )
                     .await?
                 }
-                next_block_number = chunk_block_number + BLOCK_PARSER_CHUNK_SIZE;
+                debug!(
+                    chunk_start_block_number = chunk_start_block_number,
+                    chunk_end_block_number = chunk_end_block_number,
+                    "Processed block chunk"
+                );
+                next_block_number = chunk_end_block_number + 1;
 
                 // process any buffered blocks that fulfill the chunk
                 while chunk_buffer
                     .first_key_value()
-                    .map(|(k, _)| *k == next_block_number)
+                    .map(|(chunk_start_block_number, _)| {
+                        *chunk_start_block_number == next_block_number
+                    })
                     .unwrap_or(false)
                 {
                     let (block_number, parsed_block_chunk) = chunk_buffer.pop_first().unwrap();
+                    let chunk_end_block_number = parsed_block_chunk
+                        .data
+                        .last()
+                        .map(|b| b.block_number)
+                        .unwrap_or(block_number);
                     for block in parsed_block_chunk.data {
                         execute_strategy_for_block(
                             block,
@@ -206,14 +223,19 @@ where
                         )
                         .await?
                     }
-                    next_block_number = block_number + BLOCK_PARSER_CHUNK_SIZE;
+                    debug!(
+                        chunk_start_block_number = chunk_start_block_number,
+                        chunk_end_block_number = chunk_end_block_number,
+                        "Processed block chunk"
+                    );
+                    next_block_number = chunk_end_block_number + 1;
                 }
             }
-            Some(chunk_block_number) => {
+            (Some(chunk_start_block_number), Some(_)) => {
                 // buffer the block chunk
-                chunk_buffer.insert(chunk_block_number, parsed_block_chunk);
+                chunk_buffer.insert(chunk_start_block_number, parsed_block_chunk);
             }
-            None => {
+            (None, _) | (_, None) => {
                 warn!("Received empty parsed_block_chunk");
             }
         }

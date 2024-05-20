@@ -5,7 +5,7 @@ use alloy::{network::Ethereum, providers::Provider, transports::Transport};
 
 use eyre::{eyre, Result};
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, info};
 
 pub struct TradeController<T, P>
 where
@@ -89,12 +89,15 @@ where
         R: TradeControllerRequest + Send + 'static,
         F: FnOnce(Result<TradeMetadata>) + Send + 'static,
     {
-        if *config::IS_BACKTEST || cfg!(test) {
+        if cfg!(test) {
             let rpc_provider = rpc_provider.clone();
             tokio::spawn(async move {
-                on_confirmed(request.simulate_trade_request(&rpc_provider).await)
+                on_confirmed(request.simulate_trade_request(&rpc_provider).await);
             });
 
+            Ok(())
+        } else if *config::IS_BACKTEST {
+            on_confirmed(request.simulate_trade_request(&rpc_provider).await);
             Ok(())
         } else {
             let transaction_request = request
@@ -116,13 +119,15 @@ where
     where
         R: TradeControllerRequest + Send + 'static,
     {
-        // ensure that an existing open trade exists for this pair, update it to pending close
+        // ensure that an existing open trade exists for this token, update it to pending close
 
         let open_trade = {
             let mut trades = self.trades.0.write().unwrap();
             let address_trades = trades
-                .get_mut(close_trade_request.pair_address())
-                .ok_or_else(|| eyre!("No open trade for {}", close_trade_request.pair_address()))?;
+                .get_mut(close_trade_request.token_address())
+                .ok_or_else(|| {
+                    eyre!("No open trade for {}", close_trade_request.token_address())
+                })?;
 
             match address_trades.set_active(Some(Trade::PendingClose)) {
                 Some(Trade::Open(open_trade)) => Ok(open_trade),
@@ -140,7 +145,7 @@ where
             Ok(_) => Ok(()),
             Err(err) => {
                 self.trades.set_active(
-                    close_trade_request.pair_address(),
+                    close_trade_request.token_address(),
                     Some(Trade::Open(open_trade.clone())),
                 )?;
 
@@ -148,41 +153,51 @@ where
             }
         }?;
 
-        let address = close_trade_request.pair_address().clone();
+        let address = close_trade_request.token_address().clone();
         let trades = self.trades.clone();
         let moved_open_trade = open_trade.clone();
-        let on_confirmed = move |res| match res {
-            Ok(committed_trade) => {
-                // Backtest success: update trade closed, clear active trade
-                if let Err(err) = trades.close(&address, moved_open_trade, committed_trade) {
-                    error!(
-                        address = address.to_string(),
-                        "Failed to close trade: {:?}", err
-                    );
-                }
-            }
-            Err(err) => {
-                // Backtest failed: revert the pending close active state
-                if let Err(revert_err) =
-                    trades.set_active(&address, Some(Trade::Open(moved_open_trade)))
-                {
-                    error!(
-                        address = address.to_string(),
-                        "Failed to revert pending close: {:?}, original error: {:?}",
-                        revert_err,
-                        err
-                    );
-                } else {
-                    error!(
-                        address = address.to_string(),
-                        "Failed to close trade: {:?}", err
-                    );
-                }
-            }
-        };
 
         match self
-            .send_tx(close_trade_request, self.rpc_provider.clone(), on_confirmed)
+            .send_tx(
+                close_trade_request,
+                self.rpc_provider.clone(),
+                move |res| match res {
+                    Ok(committed_trade) => {
+                        info!(
+                            token_address = address.to_string(),
+                            tx_hash = committed_trade.tx_hash().to_string(),
+                            "committed close trade"
+                        );
+
+                        // Backtest success: update trade closed, clear active trade
+                        if let Err(err) = trades.close(&address, moved_open_trade, committed_trade)
+                        {
+                            error!(
+                                address = address.to_string(),
+                                "Failed to update trades for closed trade: {:?}", err
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        // Backtest failed: revert the pending close active state
+                        if let Err(revert_err) =
+                            trades.set_active(&address, Some(Trade::Open(moved_open_trade)))
+                        {
+                            error!(
+                                address = address.to_string(),
+                                "Failed to revert pending close: {:?}, original error: {:?}",
+                                revert_err,
+                                err
+                            );
+                        } else {
+                            error!(
+                                address = address.to_string(),
+                                "Failed to close trade: {:?}", err
+                            );
+                        }
+                    }
+                },
+            )
             .await
         {
             Ok(_) => Ok(()),
@@ -205,20 +220,20 @@ where
     where
         R: TradeControllerRequest + Send + 'static,
     {
-        // ensure that we do not already have a position for this pair and add
+        // ensure that we do not already have a position for this token and add
         // the position to the store
         {
             let mut trades = self.trades.0.write().unwrap();
             let address_trades = trades
-                .entry(open_position_request.pair_address().clone())
+                .entry(open_position_request.token_address().clone())
                 .or_insert_with(|| AddressTrades::default());
 
             match address_trades.active() {
                 None => { /* expected state */ }
                 Some(_) => {
                     return Err(eyre!(
-                        "Position already exists for pair {}",
-                        open_position_request.pair_address()
+                        "Position already exists for token {}",
+                        open_position_request.token_address()
                     ));
                 }
             };
@@ -234,10 +249,10 @@ where
             .inspect_err(|_| {
                 let _ = self
                     .trades
-                    .set_active(open_position_request.pair_address(), None);
+                    .set_active(open_position_request.token_address(), None);
             })?;
 
-        let address = open_position_request.pair_address().clone();
+        let token_address = open_position_request.token_address().clone();
         let trades = self.trades.clone();
 
         match self
@@ -246,26 +261,32 @@ where
                 self.rpc_provider.clone(),
                 move |res| match res {
                     Ok(committed_trade) => {
+                        info!(
+                            token_address = token_address.to_string(),
+                            tx_hash = committed_trade.tx_hash().to_string(),
+                            "committed open trade"
+                        );
+
                         if let Err(err) =
-                            trades.set_active(&address, Some(Trade::Open(committed_trade)))
+                            trades.set_active(&token_address, Some(Trade::Open(committed_trade)))
                         {
                             error!(
-                                address = address.to_string(),
-                                "Failed to open trade: {:?}", err
+                                token_address = token_address.to_string(),
+                                "Failed to update trades for open trade: {:?}", err
                             );
                         }
                     }
                     Err(err) => {
-                        if let Err(revert_err) = trades.set_active(&address, None) {
+                        if let Err(revert_err) = trades.set_active(&token_address, None) {
                             error!(
-                                address = address.to_string(),
+                                token_address = token_address.to_string(),
                                 "Failed to revert pending open: {:?}, original error: {:?}",
                                 revert_err,
                                 err
                             );
                         } else {
                             error!(
-                                address = address.to_string(),
+                                token_address = token_address.to_string(),
                                 "Failed to open trade: {:?}", err
                             );
                         }
@@ -277,14 +298,14 @@ where
             Ok(_) => Ok(()),
             Err(err) => {
                 error!(
-                    address = address.to_string(),
+                    token_address = token_address.to_string(),
                     "Failed to submit pending tx: {:?}", err
                 );
 
                 // Tx failed to send - remove the pending position from the store
-                if let Err(err) = self.trades.set_active(&address, None) {
+                if let Err(err) = self.trades.set_active(&token_address, None) {
                     error!(
-                        address = address.to_string(),
+                        token_address = token_address.to_string(),
                         "Failed to remove pending trade: {:?}", err
                     );
                 }
@@ -312,23 +333,23 @@ mod tests {
 
     use alloy::{
         network::Ethereum,
-        primitives::{Address, BlockNumber, U256},
+        primitives::{Address, BlockNumber, TxHash, U256},
         providers::Provider,
         rpc::types::eth::TransactionRequest,
         transports::Transport,
     };
 
     struct MockTradeRequest {
-        address: Address,
+        token_address: Address,
         block_number: BlockNumber,
         confirmed_lock: Arc<Mutex<()>>,
         should_revert: bool,
     }
 
     impl MockTradeRequest {
-        fn new(address: Address, block_number: BlockNumber, should_revert: bool) -> Self {
+        fn new(token_address: Address, block_number: BlockNumber, should_revert: bool) -> Self {
             Self {
-                address,
+                token_address,
                 block_number,
                 confirmed_lock: Arc::new(Mutex::new(())),
                 should_revert,
@@ -341,8 +362,8 @@ mod tests {
     }
 
     impl TradeControllerRequest for MockTradeRequest {
-        fn pair_address(&self) -> &Address {
-            &self.address
+        fn token_address(&self) -> &Address {
+            &self.token_address
         }
 
         async fn make_trade_transaction_request<T, P>(
@@ -381,6 +402,7 @@ mod tests {
                     Err(eyre!("should_revert is true"))
                 } else {
                     Ok(TradeMetadata::new(
+                        TxHash::ZERO,
                         block_number,
                         0,
                         U256::ZERO,

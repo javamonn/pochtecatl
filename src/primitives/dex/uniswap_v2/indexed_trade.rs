@@ -3,7 +3,7 @@ use super::{
     abi,
 };
 
-use crate::config;
+use crate::{config, primitives::u32f96_from_u256_frac};
 
 use alloy::{
     primitives::{Address, FixedBytes, U256},
@@ -11,7 +11,7 @@ use alloy::{
 };
 
 use eyre::{OptionExt, Result};
-use fraction::{BigUint, GenericFraction};
+use fixed::types::U32F96;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -62,42 +62,32 @@ impl DexIndexedTrade for UniswapV2IndexedTrade {
         &self.pair_address
     }
 
-    fn weth_volume(&self, token_address: &Address) -> BigUint {
+    fn weth_volume(&self, token_address: &Address) -> U256 {
         if *token_address < *config::WETH_ADDRESS {
             // token0 is token
-            BigUint::from(self.amount1_in) + BigUint::from(self.amount1_out)
+            self.amount1_in + self.amount1_out
         } else {
             // token1 is token
-            BigUint::from(self.amount0_in) + BigUint::from(self.amount0_out)
+            self.amount0_in + self.amount0_out
         }
     }
 
-    fn token_price_before(&self, token_address: &Address) -> GenericFraction<BigUint> {
+    fn token_price_before(&self, token_address: &Address) -> U32F96 {
         let reserve0_before = self.reserve0 - self.amount0_in + self.amount0_out;
         let reserve1_before = self.reserve1 - self.amount1_in + self.amount1_out;
 
         if *token_address < *config::WETH_ADDRESS {
-            // token0 is token, token1 is weth
-            GenericFraction::new(
-                BigUint::from(reserve1_before),
-                BigUint::from(reserve0_before),
-            )
+            u32f96_from_u256_frac(reserve1_before, reserve0_before)
         } else {
-            // token0 is weth, token1 is token
-            GenericFraction::new(
-                BigUint::from(reserve0_before),
-                BigUint::from(reserve1_before),
-            )
+            u32f96_from_u256_frac(reserve0_before, reserve1_before)
         }
     }
 
-    fn token_price_after(&self, token_address: &Address) -> GenericFraction<BigUint> {
+    fn token_price_after(&self, token_address: &Address) -> U32F96 {
         if *token_address < *config::WETH_ADDRESS {
-            // token0 is token, token1 is weth
-            GenericFraction::new(BigUint::from(self.reserve1), BigUint::from(self.reserve0))
+            u32f96_from_u256_frac(self.reserve1, self.reserve0)
         } else {
-            // token0 is weth, token1 is token
-            GenericFraction::new(BigUint::from(self.reserve0), BigUint::from(self.reserve1))
+            u32f96_from_u256_frac(self.reserve0, self.reserve1)
         }
     }
 }
