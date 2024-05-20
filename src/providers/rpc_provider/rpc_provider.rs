@@ -1,6 +1,6 @@
 use crate::config;
 
-use super::{BlockProvider, TTLCache, IndexedTradeProvider};
+use super::{BlockProvider, TTLCache, DexProvider};
 
 use alloy::{
     network::{Ethereum, EthereumSigner},
@@ -25,7 +25,7 @@ pub struct RpcProvider<T: Transport + Clone, P: Provider<T, Ethereum>> {
     signer_address: Address,
     inner: Arc<P>,
 
-    indexed_trade_provider: IndexedTradeProvider<T, P>,
+    dex_provider: DexProvider<T, P>,
     block_provider: BlockProvider<T, P>,
 }
 
@@ -57,13 +57,13 @@ pub async fn new_http_signer_provider(
             .map_err(|err| eyre!("Failed to create provider: {:?}", err))?,
     );
 
-    let indexed_trade_provider = IndexedTradeProvider::new(Arc::clone(&inner));
+    let dex_provider = DexProvider::new(Arc::clone(&inner));
     let block_provider = BlockProvider::new(Arc::clone(&inner), finalized_block_header_cache);
 
     Ok(RpcProvider {
         inner,
         signer_address,
-        indexed_trade_provider,
+        dex_provider,
         block_provider,
     })
 }
@@ -77,8 +77,8 @@ where
         &self.block_provider
     }
 
-    pub fn indexed_trade_provider(&self) -> &IndexedTradeProvider<T, P> {
-        &self.indexed_trade_provider
+    pub fn dex_provider(&self) -> &DexProvider<T, P> {
+        &self.dex_provider
     }
 
     // TODO: used by disabled trace code

@@ -12,7 +12,7 @@ use indexer::{BlockRangeIndexer, Indexer};
 use primitives::BlockId;
 use providers::{rpc_provider::new_http_signer_provider, RpcProvider};
 use strategies::{MomentumStrategy, StrategyExecutor};
-use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+use tracing_subscriber::EnvFilter;
 use trade_controller::TradeController;
 
 use alloy::{network::Ethereum, providers::Provider, transports::Transport};
@@ -61,7 +61,7 @@ where
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_str(&config::RUST_LOG).unwrap_or_default())
-        .with_span_events(FmtSpan::CLOSE)
+        .with_span_events(config::TRACING_SPAN_EVENTS.clone())
         .init();
 
     info!(
@@ -100,8 +100,11 @@ async fn main() -> Result<()> {
     if *config::IS_BACKTEST {
         let mut conn = db_pool.get()?;
         let tx = conn.transaction()?;
+
         let backtest_id = NewBacktestModel::new().insert(&tx)?;
         trade_controller.insert_backtest_closed_trades(&tx, backtest_id)?;
+
+        tx.commit()?;
     }
 
     info!("complete");

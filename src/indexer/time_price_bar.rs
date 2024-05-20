@@ -3,8 +3,7 @@ use crate::primitives::TickData;
 
 use alloy::primitives::BlockNumber;
 
-use fraction::{BigUint, GenericFraction, Zero};
-use lazy_static::lazy_static;
+use fixed::types::U32F96;
 use std::collections::BTreeMap;
 
 #[derive(Debug)]
@@ -143,10 +142,6 @@ pub enum TimePriceBar {
     Finalized(FinalizedTimePriceBar),
 }
 
-lazy_static! {
-    static ref F_ZERO: GenericFraction<BigUint> = GenericFraction::zero();
-}
-
 impl TimePriceBar {
     pub fn data(&self) -> Option<&TickData> {
         match self {
@@ -168,18 +163,25 @@ impl TimePriceBar {
         }
     }
 
-    pub fn close(&self) -> &GenericFraction<BigUint> {
-        self.data().map(|d| &d.close).unwrap_or_else(|| &F_ZERO)
+    pub fn close(&self) -> &U32F96 {
+        self.data()
+            .map(|d| &d.close)
+            .unwrap_or_else(|| &U32F96::ZERO)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::PendingTimePriceBar;
-    use crate::{indexer::Indicators, primitives::TickData};
+    use crate::{
+        indexer::Indicators,
+        primitives::{u32f96_from_u256_frac, TickData},
+    };
+
+    use alloy::primitives::uint;
 
     use eyre::{Ok, Result};
-    use fraction::{GenericFraction, One};
+    use fixed::types::{I32F96, U32F96};
 
     #[test]
     fn test_pending_time_price_bar_data() -> Result<()> {
@@ -187,10 +189,10 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
                 0_u128.into(),
             ),
         );
@@ -201,10 +203,10 @@ mod tests {
                 .clone()
                 .expect("Expected data but found None"),
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
                 0_u128.into()
             )
         );
@@ -212,10 +214,10 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             2,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(2_u128, 1_u128),
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(1_u128, 2_u128),
+                U32F96::ONE,
+                U32F96::from_num(2),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
                 0_u128.into(),
             ),
         );
@@ -226,10 +228,10 @@ mod tests {
                 .clone()
                 .expect("Expected data but found None"),
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(2_u128, 1_u128),
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(1_u128, 2_u128),
+                U32F96::ONE,
+                U32F96::from_num(2),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
                 0_u128.into()
             )
         );
@@ -243,10 +245,10 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
                 0_u128.into(),
             ),
         );
@@ -254,10 +256,10 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             2,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(2_u128, 1_u128),
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(1_u128, 2_u128),
+                U32F96::ONE,
+                U32F96::from_num(2),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
                 0_u128.into(),
             ),
         );
@@ -284,30 +286,30 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
                 0_u128.into(),
             ),
         );
         time_price_bar.insert_block_price_bar(
             2,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(2_u128, 1_u128),
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(1_u128, 2_u128),
+                U32F96::ONE,
+                U32F96::from_num(2),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
                 0_u128.into(),
             ),
         );
         time_price_bar.insert_block_price_bar(
             3,
             TickData::new(
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(3_u128, 1_u128),
-                GenericFraction::new(1_u128, 3_u128),
-                GenericFraction::new(1_u128, 3_u128),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                U32F96::from_num(3),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(3_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(3_U256)),
                 0_u128.into(),
             ),
         );
@@ -318,10 +320,10 @@ mod tests {
                 .clone()
                 .expect("Expected data but found None"),
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(3_u128, 1_u128),
-                GenericFraction::new(1_u128, 3_u128),
-                GenericFraction::new(1_u128, 3_u128),
+                U32F96::ONE,
+                U32F96::from_num(3),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(3_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(3_U256)),
                 0_u128.into()
             )
         );
@@ -334,10 +336,10 @@ mod tests {
                 .clone()
                 .expect("Expected data but found None"),
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
                 0_u128.into()
             )
         );
@@ -363,10 +365,10 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(1_u128, 1_u128),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
                 0_u128.into(),
             ),
         );
@@ -374,18 +376,15 @@ mod tests {
         time_price_bar.insert_block_price_bar(
             2,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(2_u128, 1_u128),
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(1_u128, 2_u128),
+                U32F96::ONE,
+                U32F96::from_num(2),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
                 0_u128.into(),
             ),
         );
 
-        time_price_bar.set_indicators(Indicators::new(
-            None,
-            (GenericFraction::one(), GenericFraction::one()),
-        ));
+        time_price_bar.set_indicators(Indicators::new(None, (I32F96::ONE, I32F96::ONE)));
 
         let finalized = time_price_bar
             .as_finalized()
@@ -396,17 +395,14 @@ mod tests {
         assert_eq!(
             finalized.data,
             TickData::new(
-                GenericFraction::new(1_u128, 1_u128),
-                GenericFraction::new(2_u128, 1_u128),
-                GenericFraction::new(1_u128, 2_u128),
-                GenericFraction::new(1_u128, 2_u128),
+                U32F96::ONE,
+                U32F96::from_num(2),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
+                u32f96_from_u256_frac(uint!(1_U256), uint!(2_U256)),
                 0_u128.into()
             )
         );
-        assert_eq!(
-            finalized.indicators.ema,
-            (GenericFraction::one(), GenericFraction::one())
-        );
+        assert_eq!(finalized.indicators.ema, (I32F96::ONE, I32F96::ONE));
         assert_eq!(finalized.indicators.bollinger_bands, None);
 
         Ok(())

@@ -13,6 +13,7 @@ use alloy::{
     transports::Transport,
 };
 
+use serde::{Deserialize, Serialize};
 use eyre::{eyre, OptionExt, Result, WrapErr};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -99,7 +100,7 @@ impl UniswapV2PairInput {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UniswapV2Pair {
     address: Address,
     token0: Address,
@@ -108,14 +109,13 @@ pub struct UniswapV2Pair {
 
 const BP_FACTOR: U256 = uint!(10000_U256);
 const MAX_TRADE_SIZE_PRICE_IMPACT_BP: U256 = uint!(50_U256);
-const MAX_TRADE_SIZE_WEI: U256 = uint!(1000000000000000000_U256);
 
 fn get_eth_amount_in(weth_reserve: U256) -> U256 {
     let max_for_price_impact = (MAX_TRADE_SIZE_PRICE_IMPACT_BP * weth_reserve) / BP_FACTOR;
-    if max_for_price_impact < MAX_TRADE_SIZE_WEI {
+    if max_for_price_impact < *config::MAX_TRADE_SIZE_WEI {
         max_for_price_impact
     } else {
-        MAX_TRADE_SIZE_WEI
+        *config::MAX_TRADE_SIZE_WEI
     }
 }
 
@@ -347,6 +347,7 @@ impl DexPair<UniswapV2IndexedTrade> for UniswapV2Pair {
         T: Transport + Clone,
         P: Provider<T, Ethereum>,
     {
+        // FIXME: implement
         Ok(())
     }
 }

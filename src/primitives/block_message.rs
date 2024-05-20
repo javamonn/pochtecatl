@@ -26,7 +26,7 @@ impl From<Block> for BlockMessage {
             value
                 .pair_ticks
                 .into_iter()
-                .map(|(pair_address, pair_block_tick)| pair_block_tick.pair(pair_address))
+                .map(|(_, pair_block_tick)| pair_block_tick.pair())
                 .collect(),
         )
     }

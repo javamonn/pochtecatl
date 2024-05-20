@@ -1,10 +1,11 @@
 use crate::primitives::BlockId;
 
-use alloy::primitives::{Address, FixedBytes};
+use alloy::primitives::{Address, FixedBytes, U256};
 
 use eyre::Context;
 use lazy_static::lazy_static;
-use std::{env, ffi::OsStr,  sync::Once};
+use std::{env, ffi::OsStr, sync::Once};
+use tracing_subscriber::fmt::format::FmtSpan;
 
 static DOTENV_INIT: Once = Once::new();
 
@@ -21,6 +22,15 @@ fn get_env_var<K: AsRef<OsStr>>(k: K) -> Result<String, env::VarError> {
 lazy_static! {
     pub static ref RUST_LOG: String =
         get_env_var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    pub static ref TRACING_SPAN_EVENTS: FmtSpan = if get_env_var("TRACING_SPAN_EVENTS")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse()
+        .unwrap_or(false)
+    {
+        FmtSpan::CLOSE
+    } else {
+        FmtSpan::NONE
+    };
     pub static ref START_BLOCK_ID: BlockId = get_env_var("START_BLOCK_ID")
         .wrap_err("Failed to read START_BLOCK_ID from env")
         .and_then(|id| id.parse())
@@ -50,6 +60,26 @@ lazy_static! {
                 .parse()
                 .wrap_err("Failed to parse UNISWAP_V2_ROUTER_02_ADDRESS"))
             .unwrap();
+    pub static ref UNISWAP_V3_FACTORY_ADDRESS: Address = get_env_var("UNISWAP_V3_FACTORY_ADDRESS")
+        .wrap_err("Failed to read UNISWAP_V3_FACTORY_ADDRESS from env")
+        .and_then(|a| a
+            .parse()
+            .wrap_err("Failed to parse UNISWAP_V3_FACTORY_ADDRESS"))
+        .unwrap();
+    pub static ref UNISWAP_V3_QUOTER_V2_ADDRESS: Address =
+        get_env_var("UNISWAP_V3_QUOTER_V2_ADDRESS")
+            .wrap_err("Failed to read UNISWAP_V3_QUOTER_V2_ADDRESS from env")
+            .and_then(|a| a
+                .parse()
+                .wrap_err("Failed to parse UNISWAP_V3_QUOTER_V2_ADDRESS"))
+            .unwrap();
+    pub static ref UNISWAP_V3_ROUTER_02_ADDRESS: Address =
+        get_env_var("UNISWAP_V3_ROUTER_02_ADDRESS")
+            .wrap_err("Failed to read UNISWAP_V3_ROUTER_02_ADDRESS from env")
+            .and_then(|a| a
+                .parse()
+                .wrap_err("Failed to parse UNISWAP_V3_ROUTER_02_ADDRESS"))
+            .unwrap();
     pub static ref MULTICALL3_ADDRESS: Address = get_env_var("MULTICALL3_ADDRESS")
         .wrap_err("Failed to read MULTICALL3_ADDRESS from env")
         .and_then(|a| a.parse().wrap_err("Failed to parse MULTICALL3_ADDRESS"))
@@ -62,6 +92,10 @@ lazy_static! {
                 |key| FixedBytes::try_from(key.as_slice()).wrap_err("Failed to create FixedBytes")
             )
             .unwrap();
+    pub static ref MAX_TRADE_SIZE_WEI: U256 = get_env_var("MAX_TRADE_SIZE_WEI")
+        .wrap_err("Failed to read MAX_TRADE_SIZE_WEI from env")
+        .and_then(|v| v.parse().wrap_err("Failed to decode MAX_TRADE_SIZE_WEI"))
+        .unwrap();
     pub static ref IS_BACKTEST: bool = match (END_BLOCK_ID.deref(), START_BLOCK_ID.deref()) {
         (BlockId::Latest, BlockId::Latest) => false,
         _ => true,

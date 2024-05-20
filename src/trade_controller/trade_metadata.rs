@@ -2,7 +2,7 @@ use crate::{primitives::IndexedTrade, providers::RpcProvider};
 
 use alloy::{
     network::Ethereum,
-    primitives::{BlockNumber, U256},
+    primitives::{BlockNumber, U256, TxHash},
     providers::Provider,
     rpc::types::eth::{Block, BlockTransactions, TransactionReceipt},
     transports::Transport,
@@ -10,11 +10,11 @@ use alloy::{
 
 use eyre::{eyre, OptionExt, Result};
 use serde::{Deserialize, Serialize};
-
-use super::{TradeControllerRequest, TradeRequest};
+use super::TradeRequest;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TradeMetadata {
+    tx_hash: TxHash,
     block_number: BlockNumber,
     block_timestamp: u64,
     gas_fee: U256,
@@ -23,17 +23,23 @@ pub struct TradeMetadata {
 
 impl TradeMetadata {
     pub fn new(
+        tx_hash: TxHash,
         block_number: BlockNumber,
         block_timestamp: u64,
         gas_fee: U256,
         indexed_trade: IndexedTrade,
     ) -> Self {
         Self {
+            tx_hash,
             block_number,
             block_timestamp,
             gas_fee,
             indexed_trade,
         }
+    }
+
+    pub fn tx_hash(&self) -> &TxHash {
+        &self.tx_hash
     }
 
     pub fn block_timestamp(&self) -> &u64 {
@@ -82,6 +88,7 @@ impl TradeMetadata {
         };
 
         Ok(Self {
+            tx_hash: receipt.transaction_hash,
             block_number,
             block_timestamp,
             gas_fee,
@@ -89,7 +96,7 @@ impl TradeMetadata {
         })
     }
 
-    pub async fn from_simulated_indexed_trade<T, P> (
+    pub async fn from_simulated_indexed_trade<T, P>(
         indexed_trade: IndexedTrade,
         request: &TradeRequest,
         rpc_provider: &RpcProvider<T, P>,
@@ -131,6 +138,7 @@ impl TradeMetadata {
         };
 
         Ok(Self {
+            tx_hash: TxHash::ZERO,
             block_number: request.block_number,
             block_timestamp: request.block_timestamp,
             gas_fee: estimated_gas_fee,

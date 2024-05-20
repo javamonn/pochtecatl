@@ -11,7 +11,7 @@ use alloy::{
 use eyre::{Context, Result};
 use fnv::FnvHashMap;
 use std::sync::{Arc, RwLock};
-use tracing::warn;
+use tracing::{debug, instrument, warn};
 
 pub struct TimePriceBarStore {
     resolution: Resolution,
@@ -48,6 +48,7 @@ impl TimePriceBarStore {
         *self.last_inserted_block_number.read().unwrap()
     }
 
+    #[instrument(skip_all)]
     pub async fn insert_block<T, P>(
         &self,
         rpc_provider: Arc<RpcProvider<T, P>>,
@@ -106,6 +107,11 @@ impl TimePriceBarStore {
                         for pair_address in pair_addresses_to_remove.iter() {
                             time_price_bars.remove(pair_address);
                         }
+
+                        debug!(
+                            block_number = block.block_number,
+                            "pruned time price bars due to reorg"
+                        );
                     }
                     _ => {}
                 }
@@ -156,6 +162,10 @@ impl TimePriceBarStore {
                             .collect::<Vec<Address>>();
 
                         for pair_address in stale_pair_addresses.into_iter() {
+                            debug!(
+                                pair_address = pair_address.to_string(),
+                                "pruning time price bar"
+                            );
                             time_price_bars.remove(&pair_address);
                         }
 
@@ -185,7 +195,7 @@ mod tests {
     use super::TimePriceBarStore;
     use crate::{
         config,
-        indexer::{Resolution, ResolutionTimestamp},
+        indexer::{BlockChunk, Resolution, ResolutionTimestamp},
         primitives::{Block, BlockBuilder, IndexedTrade},
         providers::{
             rpc_provider::{new_http_signer_provider, TTLCache},
@@ -242,7 +252,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_block_backfill() -> Result<()> {
+    async fn test_insert_blocks() -> Result<()> {
+        let store = TimePriceBarStore::new(Resolution::FiveMinutes, 60, true);
+        let rpc_provider = Arc::new(new_http_signer_provider(&config::RPC_URL, None).await?);
+        let block_chunk = BlockChunk::fetch_from_rpc(&rpc_provider, 14943872, 14944775).await?;
+
+        for block in block_chunk.data.iter() {
+            store
+                .insert_block(Arc::clone(&rpc_provider), &block)
+                .await?;
+        }
+
+        {
+            let time_price_bars = store.time_price_bars.read().unwrap();
+            let pair_time_price_bars = time_price_bars
+                .get(&address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA"))
+                .expect("Expected pair time price bars, but found None");
+
+            let last_timestamp = ResolutionTimestamp::from_timestamp(
+                block_chunk
+                    .data
+                    .last()
+                    .expect("Expected block")
+                    .block_timestamp,
+                &Resolution::FiveMinutes,
+            );
+            let last_time_price_bar = pair_time_price_bars
+                .data()
+                .get(&last_timestamp)
+                .expect("Expected last time price bar for pair");
+
+            assert_eq!(
+                last_time_price_bar.close().to_string(),
+                "0.0000062062363659129413654159"
+            );
+            assert_eq!(
+                last_time_price_bar
+                    .indicators()
+                    .expect("Expected indicators")
+                    .ema
+                    .0
+                    .to_string(),
+                "0.00000621978880518296242568777",
+            )
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_insert_block_backtest() -> Result<()> {
         let mock_finalized_timestamp = uint!(1000_U256);
         let rpc_provider = {
             let inner = new_http_signer_provider(&config::RPC_URL, None).await?;
@@ -263,7 +322,6 @@ mod tests {
                 .await?,
             )
         };
-
 
         // test base case
         {

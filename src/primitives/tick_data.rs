@@ -2,23 +2,27 @@ use super::dex::DexIndexedTrade;
 
 use alloy::primitives::Address;
 
-use fraction::GenericFraction;
+use fixed::types::U32F96;
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 
-type F = GenericFraction<BigUint>;
-
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct TickData {
-    pub open: F,
-    pub high: F,
-    pub low: F,
-    pub close: F,
+    pub open: U32F96,
+    pub high: U32F96,
+    pub low: U32F96,
+    pub close: U32F96,
     pub weth_volume: BigUint,
 }
 
 impl TickData {
-    pub fn new(open: F, high: F, low: F, close: F, weth_volume: BigUint) -> Self {
+    pub fn new(
+        open: U32F96,
+        high: U32F96,
+        low: U32F96,
+        close: U32F96,
+        weth_volume: BigUint,
+    ) -> Self {
         Self {
             open,
             high,
@@ -33,12 +37,12 @@ impl TickData {
             None => Some(price_bar.clone()),
             Some(mut acc) => {
                 if price_bar.high > acc.high {
-                    acc.high = price_bar.high.clone()
+                    acc.high = price_bar.high
                 }
                 if price_bar.low < acc.low {
-                    acc.low = price_bar.low.clone()
+                    acc.low = price_bar.low
                 }
-                acc.close = price_bar.close.clone();
+                acc.close = price_bar.close;
 
                 Some(acc)
             }
@@ -67,7 +71,7 @@ impl TickData {
             close: price_after,
             high,
             low,
-            weth_volume: indexed_trade.weth_volume(token_address),
+            weth_volume: indexed_trade.weth_volume(token_address).try_into().unwrap(),
         }
     }
 
@@ -83,7 +87,10 @@ impl TickData {
         }
 
         self.close = price;
-        self.weth_volume += indexed_trade.weth_volume(token_address);
+
+        let indexed_trade_weth_volume: BigUint =
+            indexed_trade.weth_volume(token_address).try_into().unwrap();
+        self.weth_volume += indexed_trade_weth_volume;
     }
 }
 

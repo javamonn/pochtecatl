@@ -1,7 +1,7 @@
-use super::{DexIndexedTrade, IndexedTrade, Pair, UniswapV2PairBlockTick, UniswapV3PairBlockTick};
+use super::{
+    DexIndexedTrade, DexPair, IndexedTrade, Pair, UniswapV2PairBlockTick, UniswapV3PairBlockTick,
+};
 use crate::primitives::TickData;
-
-use alloy::primitives::Address;
 
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
@@ -12,11 +12,11 @@ pub enum PairBlockTick {
     UniswapV3(UniswapV3PairBlockTick),
 }
 
-pub trait DexPairBlockTick<T: DexIndexedTrade, P: Into<Pair>> {
+pub trait DexPairBlockTick<T: DexIndexedTrade + Into<IndexedTrade>, P: DexPair<T> + Into<Pair>> {
+    fn new(indexed_trade: T, pair: P) -> Self;
     fn tick(&self) -> &TickData;
     fn add_indexed_trade(&mut self, indexed_trade: &T);
-    fn from_indexed_trade(indexed_trade: T, token_address: Address) -> Self;
-    fn pair(&self, pair_address: Address) -> P;
+    fn pair(&self) -> &P;
 }
 
 impl PairBlockTick {
@@ -41,21 +41,34 @@ impl PairBlockTick {
         }
     }
 
-    pub fn from_indexed_trade(indexed_trade: IndexedTrade, token_address: Address) -> Self {
-        match indexed_trade {
-            IndexedTrade::UniswapV2(indexed_trade) => Self::UniswapV2(
-                UniswapV2PairBlockTick::from_indexed_trade(indexed_trade, token_address),
-            ),
-            IndexedTrade::UniswapV3(indexed_trade) => Self::UniswapV3(
-                UniswapV3PairBlockTick::from_indexed_trade(indexed_trade, token_address),
-            ),
+    pub fn new(indexed_trade: IndexedTrade, pair: Pair) -> Result<Self> {
+        match (indexed_trade, pair) {
+            (IndexedTrade::UniswapV2(indexed_trade), Pair::UniswapV2(pair)) => {
+                Ok(UniswapV2PairBlockTick::new(indexed_trade, pair).into())
+            }
+            (IndexedTrade::UniswapV3(indexed_trade), Pair::UniswapV3(pair)) => {
+                Ok(UniswapV3PairBlockTick::new(indexed_trade, pair).into())
+            }
+            _ => Err(eyre!("Invalid indexed trade for pair",)),
         }
     }
 
-    pub fn pair(&self, pair_address: Address) -> Pair {
+    pub fn pair(&self) -> Pair {
         match self {
-            Self::UniswapV2(pair_block_tick) => pair_block_tick.pair(pair_address).into(),
-            Self::UniswapV3(pair_block_tick) => pair_block_tick.pair(pair_address).into(),
+            Self::UniswapV2(pair_block_tick) => pair_block_tick.pair().clone().into(),
+            Self::UniswapV3(pair_block_tick) => pair_block_tick.pair().clone().into(),
         }
+    }
+}
+
+impl From<UniswapV2PairBlockTick> for PairBlockTick {
+    fn from(pair_block_tick: UniswapV2PairBlockTick) -> Self {
+        Self::UniswapV2(pair_block_tick)
+    }
+}
+
+impl From<UniswapV3PairBlockTick> for PairBlockTick {
+    fn from(pair_block_tick: UniswapV3PairBlockTick) -> Self {
+        Self::UniswapV3(pair_block_tick)
     }
 }

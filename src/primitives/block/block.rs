@@ -1,13 +1,13 @@
 use crate::{
     db::BlockModel,
-    primitives::{IndexedTrade, PairBlockTick},
+    primitives::{IndexedTrade, Pair, PairBlockTick},
 };
 
 use alloy::primitives::{Address, BlockHash, BlockNumber};
 
 use fnv::FnvHashMap;
 use serde::Serialize;
-use tracing::error;
+use tracing::{error, debug};
 
 #[derive(Serialize)]
 pub struct Block {
@@ -31,7 +31,7 @@ impl Block {
         }
     }
 
-    pub fn add_trade(&mut self, trade: IndexedTrade, token_address: &Address) {
+    pub fn add_trade(&mut self, trade: IndexedTrade, pair: &Pair) {
         self.pair_ticks
             .entry(*trade.pair_address())
             .and_modify(|pair_block_tick| {
@@ -39,7 +39,7 @@ impl Block {
                     error!("Error adding trade: {:?}", e)
                 };
             })
-            .or_insert_with(|| PairBlockTick::from_indexed_trade(trade, *token_address));
+            .or_insert_with(|| PairBlockTick::new(trade, pair.clone()).unwrap());
     }
 }
 

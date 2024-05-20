@@ -3,6 +3,7 @@ use crate::db::primitives::U64;
 use eyre::Result;
 use fallible_iterator::FallibleIterator;
 use rusqlite::{named_params, Transaction};
+use tracing::debug;
 
 pub struct Block {
     pub number: U64,
