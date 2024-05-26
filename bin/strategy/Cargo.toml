@@ -1,0 +1,45 @@
+[package]
+name = "pochtecatl-strategy"
+version.workspace = true
+edition.workspace = true
+
+[features]
+local = []
+
+[dependencies]
+
+# pochtecatl
+pochtecatl-db.workspace = true
+pochtecatl-primitives.workspace = true
+
+# eth
+alloy.workspace = true
+num-bigint.workspace = true
+fixed.workspace = true
+ruint = { version = "1.12.1", features = ["num-bigint"] }
+
+# async
+tokio.workspace = true
+
+# db
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+
+# misc
+eyre.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+url.workspace = true
+fnv.workspace = true
+tracing-subscriber.workspace = true
+lazy_static.workspace = true
+hex-literal.workspace = true
+dotenvy.workspace = true
+hex = "0.4.3"
+chrono = "0.4.38"
+tracing-appender = "0.2.3"
+
+

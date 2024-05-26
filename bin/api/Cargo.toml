@@ -1,0 +1,39 @@
+[package]
+name = "pochtecatl-api"
+version.workspace = true
+edition.workspace = true
+
+[features]
+local = []
+
+[dependencies]
+
+# pochtecatl
+pochtecatl-db.workspace = true
+pochtecatl-primitives.workspace = true
+
+# eth
+alloy.workspace = true
+
+# http
+axum = { version = "0.7.5", features = ["macros"] }
+tower-http = { version = "0.5.2", features = ["add-extension", "trace", "cors"] }
+tower = { version = "0.4.13", features = ["util", "timeout"] }
+
+# db
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+
+# async
+tokio.workspace = true
+
+# misc
+eyre.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+lazy_static.workspace = true
+fixed.workspace = true
