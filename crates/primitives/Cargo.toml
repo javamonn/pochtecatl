@@ -1,0 +1,29 @@
+[package]
+name = "pochtecatl-primitives"
+version.workspace = true
+edition.workspace = true 
+
+[dependencies]
+
+# pochtecatl
+pochtecatl-db.workspace = true
+
+# eth
+alloy.workspace = true
+
+# async
+tokio.workspace = true
+
+# misc
+reqwest.workspace = true
+url.workspace = true
+eyre.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+fnv.workspace = true
+fixed.workspace = true
+num-bigint.workspace = true
+lazy_static.workspace = true
+hex-literal.workspace = true
+lru = "0.12.3"
