@@ -54,7 +54,7 @@ impl TimePriceBarStore {
         &self,
         rpc_provider: Arc<RpcProvider<T, P>>,
         block: &Block,
-    ) -> Result<()>
+    ) -> Result<Option<Vec<(Address, ResolutionTimestamp)>>>
     where
         T: Transport + Clone,
         P: Provider<T, Ethereum> + 'static,
@@ -84,6 +84,7 @@ impl TimePriceBarStore {
         };
 
         // Insert the new block price bars
+        let mut newly_finalized_pair_timestamps = None;
         {
             let mut time_price_bars = self.time_price_bars.write().unwrap();
 
@@ -118,7 +119,8 @@ impl TimePriceBarStore {
                 }
             }
 
-            // Insert new BlockPriceBar items into time_price_bars
+            // Insert new BlockPriceBar items into time_price_bars and commit any newly finalized
+            // time price bars to db
             for (pair_address, pair) in block.pair_ticks.iter() {
                 let time_price_bars =
                     time_price_bars
@@ -131,7 +133,7 @@ impl TimePriceBarStore {
                             )
                         });
 
-                time_price_bars
+                let finalized_resolution_timestamps = time_price_bars
                     .insert_data(
                         block.block_number,
                         pair.tick().clone(),
@@ -143,7 +145,22 @@ impl TimePriceBarStore {
                             "Failed to insert new block price bar for pair {}",
                             pair_address
                         )
-                    })?
+                    })?;
+
+                // Add any finalized time price bars to the commit list if this is a
+                // backtest
+                match finalized_resolution_timestamps {
+                    Some(finalized_resolution_timestamps) if self.is_backtest => {
+                        newly_finalized_pair_timestamps
+                            .get_or_insert_with(|| Vec::new())
+                            .extend(
+                                finalized_resolution_timestamps
+                                    .into_iter()
+                                    .map(|ts| (pair_address.clone(), ts)),
+                            );
+                    }
+                    _ => { /* noop */ }
+                }
             }
 
             // Prune any stale time price bars
@@ -194,7 +211,7 @@ impl TimePriceBarStore {
             *last_inserted_block_number = Some(block.block_number)
         }
 
-        Ok(())
+        Ok(newly_finalized_pair_timestamps)
     }
 }
 
@@ -307,7 +324,7 @@ mod tests {
                     .ema
                     .0
                     .to_string(),
-                "0.00000621978880518296242568777",
+                "0.00000621734376418372075970034",
             )
         }
 

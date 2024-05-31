@@ -2,7 +2,7 @@ use alloy::primitives::Address;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 
 #[repr(transparent)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FixedBytes<const N: usize>(pub alloy::primitives::FixedBytes<N>);
 impl<const N: usize> From<FixedBytes<N>> for alloy::primitives::FixedBytes<N> {
     fn from(value: FixedBytes<N>) -> Self {

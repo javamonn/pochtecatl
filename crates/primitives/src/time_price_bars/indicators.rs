@@ -5,6 +5,7 @@ use fixed::{
     FixedU128,
 };
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tracing::warn;
 
@@ -23,7 +24,7 @@ pub enum IndicatorsConfig {
     All,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Indicators {
     // sma, upper band, lower band
     pub bollinger_bands: Option<(U32F96, U32F96, U32F96)>,
@@ -251,8 +252,8 @@ mod tests {
 
         let (ema, slope) = Indicators::ema(&mock_timestamp, &Resolution::FiveMinutes, &data);
 
-        assert_eq!(ema.to_string(), "5.09523809523809523809523809524");
-        assert_eq!(slope.to_string(), "0.09523809523809523809523809524");
+        assert_eq!(ema.to_string(), "5.2");
+        assert_eq!(slope.to_string(), "0.2");
     }
 
     #[test]

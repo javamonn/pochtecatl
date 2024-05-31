@@ -4,12 +4,15 @@ use serde::Deserialize;
 pub enum Resolution {
     #[serde(rename = "5m")]
     FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
 }
 
 impl Resolution {
     pub fn offset(&self) -> u64 {
         match self {
             Resolution::FiveMinutes => 300,
+            Resolution::OneHour => 3600,
         }
     }
 }

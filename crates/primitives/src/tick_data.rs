@@ -32,18 +32,22 @@ impl TickData {
         }
     }
 
+    pub fn add(&mut self, other: &Self) {
+        if other.high > self.high {
+            self.high = other.high
+        }
+        if other.low < self.low {
+            self.low = other.low
+        }
+        self.close = other.close;
+        self.weth_volume += other.weth_volume.clone();
+    }
+
     pub fn reduce<'a>(data: impl Iterator<Item = &'a Self>) -> Option<Self> {
         data.fold(None, |acc, price_bar| match acc {
             None => Some(price_bar.clone()),
             Some(mut acc) => {
-                if price_bar.high > acc.high {
-                    acc.high = price_bar.high
-                }
-                if price_bar.low < acc.low {
-                    acc.low = price_bar.low
-                }
-                acc.close = price_bar.close;
-
+                acc.add(price_bar);
                 Some(acc)
             }
         })

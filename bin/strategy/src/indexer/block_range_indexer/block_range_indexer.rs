@@ -1,7 +1,7 @@
 use crate::strategies::StrategyExecutor;
 
-use pochtecatl_db::BlockModel;
-use pochtecatl_primitives::{Block, Resolution, RpcProvider};
+use pochtecatl_db::{BacktestTimePriceBarModel, BlockModel};
+use pochtecatl_primitives::{Block, Resolution, RpcProvider, TimePriceBar};
 
 use super::{
     super::{time_price_bar_store::TimePriceBarStore, Indexer},
@@ -49,17 +49,14 @@ where
         start_block_number: B,
         end_block_number: B,
         is_backtest: bool,
+        resolution: Resolution,
     ) -> BlockRangeIndexer<T, P> {
         BlockRangeIndexer {
             rpc_provider,
             db_pool,
             start_block_number: start_block_number.into(),
             end_block_number: end_block_number.into(),
-            time_price_bar_store: Arc::new(TimePriceBarStore::new(
-                Resolution::FiveMinutes,
-                60,
-                is_backtest,
-            )),
+            time_price_bar_store: Arc::new(TimePriceBarStore::new(resolution, 60, is_backtest)),
         }
     }
 }
@@ -130,14 +127,55 @@ async fn execute_strategy_for_block<T, P>(
     rpc_provider: Arc<RpcProvider<T, P>>,
     strategy_executor: Arc<StrategyExecutor<T, P>>,
     time_price_bar_store: Arc<TimePriceBarStore>,
+    db_provider: &Pool<SqliteConnectionManager>,
 ) -> Result<()>
 where
     T: Transport + Clone,
     P: Provider<T, Ethereum> + 'static,
 {
-    time_price_bar_store
+    let finalized_pair_timestamps = time_price_bar_store
         .insert_block(Arc::clone(&rpc_provider), &parsed_block)
         .await?;
+
+    if let Some(finalized_pair_timestamps) = finalized_pair_timestamps {
+        let time_price_bars = time_price_bar_store.time_price_bars().read().unwrap();
+        let mut conn = db_provider.get()?;
+        let tx = conn.transaction()?;
+        let resolution = time_price_bar_store.resolution();
+
+        for (pair_address, timestamp) in finalized_pair_timestamps {
+            match time_price_bars
+                .get(&pair_address)
+                .and_then(|bars| bars.data().get(&timestamp))
+                .and_then(|bar| match bar {
+                    TimePriceBar::Finalized(b) => Some(b),
+                    _ => None,
+                }) {
+                Some(finalized_time_price_bar) => {
+                    let _ = finalized_time_price_bar
+                        .as_backtest_time_price_bar_model(pair_address, resolution, timestamp)
+                        .and_then(|row| row.insert(&tx).map_err(Into::into))
+                        .inspect_err(|e| {
+                            warn!(
+                                pair_address = pair_address.to_string(),
+                                timestamp = timestamp.0,
+                                "Failed to insert finalized time price bar: {:?}",
+                                e
+                            );
+                        });
+                }
+                _ => {
+                    warn!(
+                        pair_address = pair_address.to_string(),
+                        timestamp = timestamp.0,
+                        "No finalized time price bar found"
+                    );
+                }
+            }
+        }
+
+        tx.commit()?;
+    }
 
     strategy_executor
         .on_indexed_block_message(parsed_block.into(), &time_price_bar_store)
@@ -191,6 +229,7 @@ where
                         Arc::clone(&rpc_provider),
                         Arc::clone(&strategy_executor),
                         Arc::clone(&time_price_bar_store),
+                        db_provider,
                     )
                     .await?
                 }
@@ -221,6 +260,7 @@ where
                             Arc::clone(&rpc_provider),
                             Arc::clone(&strategy_executor),
                             Arc::clone(&time_price_bar_store),
+                            db_provider,
                         )
                         .await?
                     }

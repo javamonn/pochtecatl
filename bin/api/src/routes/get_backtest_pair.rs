@@ -1,14 +1,14 @@
 use crate::primitives::{AppError, AppJson, AppState};
 
-use pochtecatl_db::{BacktestClosedTradeModel, BlockModel};
+use pochtecatl_db::{BacktestClosedTradeModel, BacktestTimePriceBarModel, BlockModel};
 use pochtecatl_primitives::{
-    u32f96_from_u256_frac, Block, IndicatorsConfig, Resolution, ResolutionTimestamp, TimePriceBar,
-    TimePriceBars, TradeMetadata, TradeRequestOp,
+    u32f96_from_u256_frac, Block, FinalizedTimePriceBar, IndicatorsConfig, Resolution,
+    ResolutionTimestamp, TimePriceBar, TimePriceBars, TradeMetadata, TradeRequestOp,
 };
 
 use alloy::primitives::{uint, Address, TxHash, U256};
 use axum::extract::{Path, Query, State};
-use eyre::Result;
+use eyre::{Context, Result};
 use fixed::traits::LossyInto;
 use lazy_static::lazy_static;
 use rusqlite::Transaction;
@@ -52,6 +52,24 @@ impl PriceTickResponse {
             ema,
             sma,
         }
+    }
+
+    pub fn from_finalized_time_price_bar(ts: u64, time_price_bar: &FinalizedTimePriceBar) -> Self {
+        let ema = time_price_bar.indicators().map(|i| i.ema.0.lossy_into());
+        let sma = time_price_bar
+            .indicators()
+            .and_then(|i| i.bollinger_bands)
+            .map(|i| i.0.lossy_into());
+
+        Self::new(
+            ts,
+            time_price_bar.data.open.lossy_into(),
+            time_price_bar.data.high.lossy_into(),
+            time_price_bar.data.low.lossy_into(),
+            time_price_bar.data.close.lossy_into(),
+            ema,
+            sma,
+        )
     }
 
     pub fn from_time_price_bar(ts: ResolutionTimestamp, time_price_bar: &TimePriceBar) -> Self {
@@ -167,7 +185,33 @@ fn get_trades(
     })
 }
 
-fn get_price_ticks(
+fn get_price_ticks_from_time_price_bars(
+    tx: &Transaction,
+    pair_address: Address,
+    start_at: u64,
+    end_at: u64,
+) -> eyre::Result<Vec<PriceTickResponse>, AppError> {
+    let time_price_bars = BacktestTimePriceBarModel::query_by_pair_resolution_ts(
+        &tx,
+        pair_address,
+        start_at,
+        end_at,
+    )?;
+
+    let mut output = Vec::with_capacity(time_price_bars.len());
+    for time_price_bar in time_price_bars.into_iter() {
+        let finalized_time_price_bar =
+            serde_json::from_value(time_price_bar.data).wrap_err("Failed to deserialize data")?;
+        output.push(PriceTickResponse::from_finalized_time_price_bar(
+            time_price_bar.resolution_ts.0,
+            &finalized_time_price_bar,
+        ));
+    }
+
+    Ok(output)
+}
+
+fn get_price_ticks_from_blocks(
     tx: &Transaction,
     pair_address: Address,
     start_at: u64,
@@ -231,8 +275,15 @@ pub async fn handler(
 ) -> eyre::Result<AppJson<Response>, AppError> {
     let mut db_conn = app_state.db().get()?;
     let tx = db_conn.transaction()?;
-    let trade_ticks = get_trades(&tx, backtest_id, pair_address, start_at, end_at, &resolution)?;
-    let price_ticks = get_price_ticks(&tx, pair_address, start_at, end_at, resolution)?;
+    let trade_ticks = get_trades(
+        &tx,
+        backtest_id,
+        pair_address,
+        start_at,
+        end_at,
+        &resolution,
+    )?;
+    let price_ticks = get_price_ticks_from_time_price_bars(&tx, pair_address, start_at, end_at)?;
     tx.finish()?;
 
     Ok(AppJson(Response {

@@ -1,12 +1,16 @@
 use super::Indicators;
-use crate::TickData;
+use crate::{Resolution, ResolutionTimestamp, TickData};
 
-use alloy::primitives::BlockNumber;
+use alloy::primitives::{Address, BlockNumber};
 
+use eyre::Result;
 use fixed::types::U32F96;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug)]
+use pochtecatl_db::BacktestTimePriceBarModel;
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FinalizedTimePriceBar {
     pub data: TickData,
     pub indicators: Option<Indicators>,
@@ -35,6 +39,20 @@ impl FinalizedTimePriceBar {
 
     pub fn indicators(&self) -> &Option<Indicators> {
         &self.indicators
+    }
+
+    pub fn as_backtest_time_price_bar_model(
+        &self,
+        pair_address: Address,
+        resolution: &Resolution,
+        resolution_ts: ResolutionTimestamp,
+    ) -> Result<BacktestTimePriceBarModel> {
+        Ok(BacktestTimePriceBarModel::new(
+            pair_address,
+            resolution.offset(),
+            resolution_ts.0,
+            serde_json::to_value(self)?,
+        ))
     }
 }
 
@@ -93,17 +111,38 @@ impl PendingTimePriceBar {
         block_numbers: I,
         data: &TickData,
     ) {
+        let mut did_overwrite = false;
         for block_number in block_numbers {
-            self.block_price_bars.insert(block_number, data.clone());
+            if self
+                .block_price_bars
+                .insert(block_number, data.clone())
+                .is_some()
+            {
+                did_overwrite = true;
+            }
         }
 
-        self.data = TickData::reduce(self.block_price_bars.values());
+        match self.data.as_mut() {
+            Some(tick) if !did_overwrite => tick.add(&data),
+            _ => {
+                self.data = TickData::reduce(self.block_price_bars.values());
+            }
+        };
         self.indicators = None;
     }
 
     pub fn insert_block_price_bar(&mut self, block_number: BlockNumber, data: TickData) {
-        self.block_price_bars.insert(block_number, data);
-        self.data = TickData::reduce(self.block_price_bars.values());
+        let did_overwrite = self
+            .block_price_bars
+            .insert(block_number, data.clone())
+            .is_some();
+
+        match self.data.as_mut() {
+            Some(tick) if !did_overwrite => tick.add(&data),
+            _ => {
+                self.data = TickData::reduce(self.block_price_bars.values());
+            }
+        };
         self.indicators = None;
     }
 

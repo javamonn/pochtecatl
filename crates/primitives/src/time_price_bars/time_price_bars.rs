@@ -168,13 +168,15 @@ impl TimePriceBars {
         Ok(())
     }
 
+    // Returns a list of newly finalized resolution timestamps as a result of the
+    // insert
     pub fn insert_data(
         &mut self,
         block_number: BlockNumber,
         data: TickData,
         block_timestamp: u64,
         finalized_timestamp: Option<ResolutionTimestamp>,
-    ) -> Result<()> {
+    ) -> Result<Option<Vec<ResolutionTimestamp>>> {
         let block_resolution_timestamp =
             ResolutionTimestamp::from_timestamp(block_timestamp, &self.resolution);
         let mut updated_block_resolution_timestamps = Vec::new();
@@ -304,32 +306,34 @@ impl TimePriceBars {
             }
         }
 
-        // Finalize range if required
+        // Finalize range if required and return the newly finalized timestamps
         match (finalized_timestamp, self.last_finalized_timestamp) {
             (Some(finalized_timestamp), Some(last_finalized_timestamp))
                 if finalized_timestamp > last_finalized_timestamp =>
             {
-                self.finalize_range(
+                let finalized_ts = self.finalize_range(
                     &last_finalized_timestamp.next(&self.resolution),
                     &finalized_timestamp,
                 )?;
                 self.last_finalized_timestamp = Some(finalized_timestamp);
+                Ok(Some(finalized_ts))
             }
             (Some(finalized_timestamp), None) => {
-                self.finalize_range(&ResolutionTimestamp::zero(), &finalized_timestamp)?;
+                let finalized_ts =
+                    self.finalize_range(&ResolutionTimestamp::zero(), &finalized_timestamp)?;
                 self.last_finalized_timestamp = Some(finalized_timestamp);
+                Ok(Some(finalized_ts))
             }
-            _ => {}
+            _ => Ok(None),
         }
-
-        Ok(())
     }
 
     fn finalize_range(
         &mut self,
         start_resolution_timestamp: &ResolutionTimestamp,
         end_resolution_timestamp: &ResolutionTimestamp,
-    ) -> Result<()> {
+    ) -> Result<Vec<ResolutionTimestamp>> {
+        let mut finalized_timestamps = Vec::new();
         for (timestamp, price_bar) in self
             .data
             .range_mut(start_resolution_timestamp..=end_resolution_timestamp)
@@ -339,6 +343,7 @@ impl TimePriceBars {
                     match pending_time_price_bar.as_finalized() {
                         Some(finalized_time_price_bar) => {
                             *price_bar = TimePriceBar::Finalized(finalized_time_price_bar);
+                            finalized_timestamps.push(timestamp.clone());
                         }
                         None => {
                             return Err(eyre!(
@@ -354,7 +359,7 @@ impl TimePriceBars {
             }
         }
 
-        Ok(())
+        Ok(finalized_timestamps)
     }
 
     pub fn is_stale(&self, ts: ResolutionTimestamp) -> bool {

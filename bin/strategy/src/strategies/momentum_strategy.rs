@@ -77,20 +77,24 @@ impl Strategy for MomentumStrategy {
             .ok_or_else(|| eyre!("No time price bar found for pair",))
             .and_then(|time_price_bar| {
                 match time_price_bar.indicators() {
-                    Some(Indicators { ema: (ema, _), .. }) => {
+                    Some(Indicators {
+                        bollinger_bands: Some((sma, _, _)),
+                        ..
+                    }) => {
                         let close = time_price_bar.close();
-                        if close > ema {
-                            Err(eyre!("Close {:?} is above EMA {:?}", close, ema))
+                        if close > sma {
+                            Err(eyre!("Close {:?} is above SMA {:?}", close, sma))
                         } else {
                             // Close is below EMA after crossing SMA, close the trade
                             debug!(
-                                ema = ema.to_string(),
+                                sma = sma.to_string(),
                                 close = close.to_string(),
                                 "should_close_position"
                             );
                             Ok(())
                         }
                     }
+                    Some(_) => Err(eyre!("No bollinger bands found for pair.")),
                     None => Err(eyre!("No indicators found for pair.")),
                 }
             })

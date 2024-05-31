@@ -4,7 +4,7 @@ mod strategies;
 mod trade_controller;
 
 use pochtecatl_db::{connect, NewBacktestModel};
-use pochtecatl_primitives::{new_http_signer_provider, BlockId, RpcProvider};
+use pochtecatl_primitives::{new_http_signer_provider, BlockId, RpcProvider, Resolution};
 
 use indexer::{BlockRangeIndexer, Indexer};
 
@@ -39,6 +39,7 @@ where
                     start.clone(),
                     end.clone(),
                     *config::IS_BACKTEST,
+                    Resolution::OneHour
                 ))
             } else {
                 Err(eyre!(

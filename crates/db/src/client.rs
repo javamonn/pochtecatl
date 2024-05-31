@@ -42,6 +42,7 @@ const INIT_MIGRATIONS: &'static str = concat!(
     include_str!("migrations/up-1-blocks.sql"),
     include_str!("migrations/up-2-backtests.sql"),
     include_str!("migrations/up-3-backtest-closed-trades.sql"),
+    include_str!("migrations/up-4-backtest-time-price-bars.sql"),
 );
 
 pub fn connect(url: &String) -> Result<Pool<SqliteConnectionManager>> {
