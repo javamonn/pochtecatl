@@ -63,7 +63,7 @@ where
 
 const BLOCK_PARSER_CHUNK_SIZE: u64 = 100;
 const BLOCK_PARSER_CONCURRENCY: u64 = 50;
-const PARSED_BLOCK_CHANNEL_CAPACITY: usize = 360;
+const PARSED_BLOCK_CHANNEL_CAPACITY: usize = 50;
 
 async fn fetch_block_chunks_task<T, P>(
     rpc_provider: Arc<RpcProvider<T, P>>,

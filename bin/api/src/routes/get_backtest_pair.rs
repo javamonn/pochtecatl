@@ -142,6 +142,7 @@ impl TradeTickResponse {
 pub struct Response {
     price_ticks: Vec<PriceTickResponse>,
     trade_ticks: Vec<TradeTickResponse>,
+    pnl: f64,
 }
 
 fn get_trades(
@@ -211,50 +212,18 @@ fn get_price_ticks_from_time_price_bars(
     Ok(output)
 }
 
-fn get_price_ticks_from_blocks(
-    tx: &Transaction,
-    pair_address: Address,
-    start_at: u64,
-    end_at: u64,
-    resolution: Resolution,
-) -> eyre::Result<Vec<PriceTickResponse>, AppError> {
-    let blocks = BlockModel::query_by_timestamp_range(&tx, start_at, end_at)?;
-    let pair_time_price_bars = blocks
-        .into_iter()
-        .filter_map(|block| {
-            let block = Block::from(block);
-
-            block.pair_ticks.get(&pair_address).map(|pair_block_tick| {
-                (
-                    block.block_number,
-                    block.block_timestamp,
-                    pair_block_tick.tick().clone(),
-                )
-            })
-        })
-        .fold(
-            TimePriceBars::new(None, resolution, Some(IndicatorsConfig::All)),
-            |mut acc, (block_number, block_timestamp, tick)| {
-                let _ = acc
-                    .insert_data(
-                        block_number,
-                        tick,
-                        block_timestamp,
-                        Some(
-                            ResolutionTimestamp::from_timestamp(block_timestamp, &resolution)
-                                .previous(&resolution),
-                        ),
-                    )
-                    .inspect_err(|e| error!("Failed to insert data: {}", e));
-                acc
-            },
-        );
-
-    Ok(pair_time_price_bars
-        .data()
-        .iter()
-        .map(|(ts, time_price_bar)| PriceTickResponse::from_time_price_bar(*ts, time_price_bar))
-        .collect())
+fn calculate_pnl(trade_ticks: &Vec<TradeTickResponse>) -> f64 {
+    trade_ticks.iter().enumerate().fold(0.0, |acc, (idx, trade_tick)| {
+        if trade_tick.closes_tx_hash.is_some() {
+            acc + trade_tick.execution_amount - trade_tick.gas_fee_amount
+        } else if idx != trade_ticks.len() - 1 {
+            // Exclude the last trade if its an open trade since it has no corresponing
+            // close within the backtest range.
+            acc - trade_tick.execution_amount - trade_tick.gas_fee_amount
+        } else {
+            acc
+        }
+    })
 }
 
 #[derive(Deserialize)]
@@ -286,8 +255,11 @@ pub async fn handler(
     let price_ticks = get_price_ticks_from_time_price_bars(&tx, pair_address, start_at, end_at)?;
     tx.finish()?;
 
+    let pnl = calculate_pnl(&trade_ticks);
+
     Ok(AppJson(Response {
         price_ticks,
         trade_ticks,
+        pnl,
     }))
 }

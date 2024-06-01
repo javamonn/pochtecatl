@@ -2,7 +2,7 @@ use super::Strategy;
 
 use crate::{
     indexer::TimePriceBarStore,
-    trade_controller::{Trade, TradeController, TradeRequest},
+    trade_controller::{AddressTrades, Trade, TradeController, TradeRequest},
 };
 
 use pochtecatl_primitives::{BlockMessage, ResolutionTimestamp, TradeRequestOp};
@@ -15,11 +15,21 @@ use alloy::{
 };
 use chrono::DateTime;
 use eyre::Result;
+use lazy_static::lazy_static;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument};
 
-const TARGET_PAIR_ADDRESS: Address = address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA");
+lazy_static! {
+    static ref TARGET_PAIR_ADDRESSES: Vec<Address> = vec![
+        // degen
+        address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA"),
+        // keycat
+        address!("377FeeeD4820B3B28D1ab429509e7A0789824fCA"),
+        // toshi
+        address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3")
+    ];
+}
 
 pub struct StrategyExecutor<T, P>
 where
@@ -60,7 +70,7 @@ where
                 ResolutionTimestamp::from_timestamp(block_message.block_timestamp, &resolution);
 
             for pair in block_message.pairs.into_iter() {
-                if cfg!(feature = "local") && *pair.address() != TARGET_PAIR_ADDRESS {
+                if cfg!(feature = "local") && !TARGET_PAIR_ADDRESSES.contains(&pair.address()) {
                     continue;
                 }
 
@@ -72,13 +82,22 @@ where
                             pair.address().to_string()
                         )
                     });
-                let trade_request = match trades
-                    .get(pair.token_address())
-                    .and_then(|address_trades| address_trades.active().as_ref())
-                {
+
+                let address_trades = trades.get(pair.token_address());
+                let active_trade = address_trades.and_then(|t| t.active().as_ref());
+                let last_closed_trade = address_trades
+                    .and_then(|t| t.closed().last())
+                    .map(|(_, close)| close);
+
+                let trade_request = match active_trade {
                     None => self
                         .strategy
-                        .should_open_position(&pair_time_price_bars, &resolution_timestamp)
+                        .should_open_position(
+                            &pair_time_price_bars,
+                            &resolution_timestamp,
+                            &resolution,
+                            last_closed_trade,
+                        )
                         .inspect_err(|err| {
                             debug!(
                                 block_number = block_message.block_number,
@@ -105,10 +124,8 @@ where
                         .should_close_position(
                             &pair_time_price_bars,
                             &resolution_timestamp,
-                            &ResolutionTimestamp::from_timestamp(
-                                *open_trade_metadata.block_timestamp(),
-                                &resolution,
-                            ),
+                            &resolution,
+                            &open_trade_metadata,
                         )
                         .inspect_err(|err| {
                             debug!(

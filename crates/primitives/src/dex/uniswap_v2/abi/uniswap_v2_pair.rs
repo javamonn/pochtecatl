@@ -51,5 +51,5 @@ pub fn get_reserves_tx_request(
     TransactionRequest::default()
         .with_from(signer_address)
         .with_to(Into::<TxKind>::into(pair_address))
-        .with_input(data.abi_encode().into())
+        .with_input(data.into())
 }

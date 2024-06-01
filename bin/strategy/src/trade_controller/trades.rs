@@ -24,8 +24,8 @@ impl Trade {
 }
 
 pub struct AddressTrades {
-    active: Option<Trade>,
-    closed: Vec<(TradeMetadata, TradeMetadata)>,
+    pub active: Option<Trade>,
+    pub closed: Vec<(TradeMetadata, TradeMetadata)>,
 }
 impl AddressTrades {
     pub fn close(&mut self, open_trade: TradeMetadata, committed_trade: TradeMetadata) {

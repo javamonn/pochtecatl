@@ -357,3 +357,41 @@ impl DexPair<UniswapV2IndexedTrade> for UniswapV2Pair {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::UniswapV2Pair;
+    use crate::new_http_signer_provider;
+
+    use alloy::primitives::{address, uint};
+
+    use eyre::Result;
+    use hex_literal::hex;
+
+    #[tokio::test]
+    pub async fn test_get_reserves() -> Result<()> {
+        let rpc_provider = new_http_signer_provider(
+            url::Url::parse(
+                "https://base-mainnet.g.alchemy.com/v2/GHF2kp-FpiiuNzmfpdP_dnms5WkewVQ-",
+            )?,
+            &hex!("4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318").into(),
+            None,
+            true,
+        )
+        .await?;
+
+        let pair = UniswapV2Pair::new(
+            address!("377feeed4820b3b28d1ab429509e7a0789824fca"),
+            address!("4200000000000000000000000000000000000006"),
+            address!("9a26f5433671751c3276a065f57e5a02d2817973"),
+        );
+        let result = pair
+            .get_reserves(Some(13853472.into()), &rpc_provider)
+            .await?;
+
+        assert_eq!(result.0, uint!(122369275398895730388271491_U256));
+        assert_eq!(result.1, uint!(115729620849545977143_U256));
+
+        Ok(())
+    }
+}

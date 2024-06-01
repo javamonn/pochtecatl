@@ -104,6 +104,9 @@ mod tests {
         {
             let mut conn = pool.get()?;
             let tx = conn.transaction()?;
+            block.clone().insert(&tx)?;
+
+            // Should be able to replace existing block without issue
             block.insert(&tx)?;
             tx.commit()?;
         }
