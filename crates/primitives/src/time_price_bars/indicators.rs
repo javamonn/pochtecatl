@@ -26,8 +26,8 @@ pub enum IndicatorsConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Indicators {
-    // sma, upper band, lower band
-    pub bollinger_bands: Option<(U32F96, U32F96, U32F96)>,
+    // sma, upper band, lower band, sma slope
+    pub bollinger_bands: Option<(U32F96, U32F96, U32F96, I32F96)>,
     // ema, slope
     pub ema: (I32F96, I32F96),
 }
@@ -37,7 +37,7 @@ impl Indicators {
         timestamp: &ResolutionTimestamp,
         resolution: &Resolution,
         data: &BTreeMap<ResolutionTimestamp, TimePriceBar>,
-    ) -> Option<(U32F96, U32F96, U32F96)> {
+    ) -> Option<(U32F96, U32F96, U32F96, I32F96)> {
         let close_prices = data
             .range(timestamp.decrement(resolution, INDICATOR_BB_PERIOD - 1)..=*timestamp)
             .filter_map(|(_, time_price_bar)| time_price_bar.data().map(|d| d.close.clone()));
@@ -56,14 +56,20 @@ impl Indicators {
                     .sum::<U32F96>()
                     / *Q_INDICATOR_BB_PERIOD
             };
-
             let std_dev = variance.sqrt();
+            let sma_slope = data
+                .get(&timestamp.previous(resolution))
+                .and_then(|t| t.indicators())
+                .and_then(|i| i.bollinger_bands)
+                .map(|(prev_sma, _, _, _)| sma.to_num::<I32F96>() - prev_sma.to_num::<I32F96>())
+                .unwrap_or(I32F96::ZERO);
 
             Some((
                 sma.clone(),
                 sma.clone() + (std_dev * *Q_INDICATOR_BB_STD_DEV),
                 sma.checked_sub(std_dev * *Q_INDICATOR_BB_STD_DEV)
                     .unwrap_or(U32F96::ZERO),
+                sma_slope,
             ))
         }
     }
@@ -98,7 +104,7 @@ impl Indicators {
     }
 
     pub fn new(
-        bollinger_bands: Option<(U32F96, U32F96, U32F96)>,
+        bollinger_bands: Option<(U32F96, U32F96, U32F96, I32F96)>,
         ema: (I32F96, I32F96),
     ) -> Indicators {
         Indicators {

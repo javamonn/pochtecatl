@@ -58,7 +58,7 @@ impl Strategy for MomentumStrategy {
                 match time_price_bar.indicators() {
                     Some(Indicators {
                         ema: (ema, ema_slope),
-                        bollinger_bands: Some((sma, upper_band, _)),
+                        bollinger_bands: Some((sma, upper_band, _, sma_slope)),
                     }) => {
                         if ema < sma {
                             // Ensure EMA is above SMA
@@ -71,7 +71,14 @@ impl Strategy for MomentumStrategy {
                             Err(eyre!("Close {:?} is below EMA {:?}", close, ema))
                         } else if close > upper_band {
                             // Ensure close is below upper band
-                            Err(eyre!("Close {:?} is above upper band {:?}", close, upper_band))
+                            Err(eyre!(
+                                "Close {:?} is above upper band {:?}",
+                                close,
+                                upper_band
+                            ))
+                        } else if sma_slope.is_negative() {
+                            // Ensure SMA slope is positive
+                            Err(eyre!("SMA slope {:?} is negative", sma_slope))
                         } else if previous_trade_resolution_ts.is_some_and(
                             |previous_trade_resolution_ts| {
                                 let mut previous_ema_sma_cross_ts = timestamp;
@@ -79,7 +86,7 @@ impl Strategy for MomentumStrategy {
                                 {
                                     if let Some(Indicators {
                                         ema: (ema, _),
-                                        bollinger_bands: Some((sma, _, _)),
+                                        bollinger_bands: Some((sma, _, _, _)),
                                     }) = time_price_bar.indicators()
                                     {
                                         if ema < sma {
@@ -132,14 +139,9 @@ impl Strategy for MomentumStrategy {
             .and_then(|time_price_bar| {
                 match time_price_bar.indicators() {
                     Some(Indicators {
-                        bollinger_bands: Some((sma, _, _)),
+                        bollinger_bands: Some((sma, _, _, sma_slope)),
                         ema: (ema, ema_slope),
                     }) => {
-                        // Ensure that we did not open a position on the same time price bar
-                        if now_block_resolution_timestamp == open_block_resolution_timestamp {
-                            return Err(eyre!("Opened position on the same time price bar"));
-                        }
-
                         // Ensure the most recent time price bar is negative
                         if time_price_bar
                             .data()
@@ -149,60 +151,30 @@ impl Strategy for MomentumStrategy {
                             return Err(eyre!("Time price bar is not negative"));
                         }
 
-                        // Close special case: If current close is below our initial entry price
-                        /*
+                        // Close if EMA is below SMA
+                        if ema < sma {
+                            return Ok(());
+                        }
+
+                        // Close if Close is below SMA and prev SMA slope closed negative
+                        if time_price_bar.close() < sma
+                            && pair_time_price_bars
+                                .data()
+                                .get(
+                                    &now_block_resolution_timestamp
+                                        .previous(resolution)
+                                        .max(*open_block_resolution_timestamp),
+                                )
+                                .and_then(|t| t.indicators())
+                                .and_then(|i| i.bollinger_bands)
+                                .is_some_and(|(_, _, _, prev_sma_slope)| {
+                                    prev_sma_slope.is_negative()
+                                })
                         {
-                            let entry_price = open_trade_metadata
-                                .indexed_trade()
-                                .token_price_before(open_trade_metadata.token_address());
-                            let current_price = *time_price_bar.close();
-                            if ema_slope.is_negative() && current_price < entry_price {
-                                debug!(
-                                    entry_price = entry_price.to_string(),
-                                    current_price = current_price.to_string(),
-                                    "should_close_position: current_price < entry_price"
-                                );
-                                return Ok(());
-                            }
-                        }
-                        */
-
-                        // Close special case: If the previous time price bar closed below the SMA
-                        /*
-                        {
-                            let previous_resolution_timestamp =
-                                now_block_resolution_timestamp.previous(&resolution);
-                            let previous_time_price_bar = pair_time_price_bars
-                                .time_price_bar(&previous_resolution_timestamp)
-                                .ok_or_else(|| {
-                                    eyre!("No previous time price bar found for pair")
-                                })?;
-                            let previous_close = previous_time_price_bar.close();
-                            if previous_resolution_timestamp > *open_block_resolution_timestamp
-                                && previous_close < sma
-                            {
-                                debug!(
-                                    previous_close = previous_close.to_string(),
-                                    sma = sma.to_string(),
-                                    "should_close_position: previous_close < sma"
-                                );
-                                return Ok(());
-                            }
-                        }
-                        */
-
-                        // Ensure the EMA crossed below the SMA
-                        if ema > sma {
-                            return Err(eyre!("EMA {:?} is above SMA {:?}", ema, sma));
+                            return Ok(());
                         }
 
-                        // All close conditions met, close the trade
-                        debug!(
-                            sma = sma.to_string(),
-                            ema = ema.to_string(),
-                            "should_close_position: close conditions met"
-                        );
-                        Ok(())
+                        Err(eyre!("Should close position"))
                     }
                     Some(_) => Err(eyre!("No bollinger bands found for pair.")),
                     None => Err(eyre!("No indicators found for pair.")),
