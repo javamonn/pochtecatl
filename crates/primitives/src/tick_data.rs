@@ -43,9 +43,15 @@ impl TickData {
         self.weth_volume += other.weth_volume.clone();
     }
 
-    pub fn reduce<'a>(data: impl Iterator<Item = &'a Self>) -> Option<Self> {
+    pub fn reduce<'a>(open: Option<U32F96>, data: impl Iterator<Item = &'a Self>) -> Option<Self> {
         data.fold(None, |acc, price_bar| match acc {
-            None => Some(price_bar.clone()),
+            None => {
+                let mut init = price_bar.clone();
+                if let Some(open) = open {
+                    init.open = open;
+                }
+                Some(init)
+            }
             Some(mut acc) => {
                 acc.add(price_bar);
                 Some(acc)

@@ -6,7 +6,7 @@ use fixed::{
 };
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Bound};
 use tracing::warn;
 
 pub const INDICATOR_BB_PERIOD: u64 = 20;
@@ -39,7 +39,9 @@ impl Indicators {
         data: &BTreeMap<ResolutionTimestamp, TimePriceBar>,
     ) -> Option<(U32F96, U32F96, U32F96, I32F96)> {
         let close_prices = data
-            .range(timestamp.decrement(resolution, INDICATOR_BB_PERIOD - 1)..=*timestamp)
+            .range((Bound::Unbounded, Bound::Included(timestamp)))
+            .rev()
+            .take(INDICATOR_BB_PERIOD as usize)
             .filter_map(|(_, time_price_bar)| time_price_bar.data().map(|d| d.close.clone()));
 
         if close_prices.clone().count() != INDICATOR_BB_PERIOD as usize {
@@ -173,7 +175,7 @@ mod tests {
                 })
         };
 
-        let (sma, upper_band, lower_band) =
+        let (sma, upper_band, lower_band, _) =
             Indicators::bollinger_band(&mock_timestamp, &Resolution::FiveMinutes, &data)
                 .expect("Bollinger band not found");
 

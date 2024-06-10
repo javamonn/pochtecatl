@@ -223,12 +223,24 @@ impl TimePriceBars {
                         .is_some_and(|ts| ts != padded_resolution_timestamp)
                     {
                         let ts = resolution_timestamp_to_pad.unwrap();
-                        match self
-                            .data
-                            .entry(ts)
-                            .or_insert_with(|| TimePriceBar::Pending(PendingTimePriceBar::new()))
-                        {
-                            TimePriceBar::Pending(time_price_bar) => {
+
+                        match self.data.get_mut(&ts) {
+                            None => {
+                                let previous_close = self
+                                    .data
+                                    .get(&ts.previous(&self.resolution))
+                                    .map(|time_price_bar| time_price_bar.close().clone());
+                                let mut time_price_bar = PendingTimePriceBar::new(previous_close);
+                                time_price_bar.insert_block_price_bar_range(
+                                    block_numbers_to_pad.drain(..),
+                                    &last_inserted_data,
+                                );
+                                self.data
+                                    .insert(ts.clone(), TimePriceBar::Pending(time_price_bar));
+                                updated_block_resolution_timestamps
+                                    .push(padded_resolution_timestamp);
+                            }
+                            Some(TimePriceBar::Pending(time_price_bar)) => {
                                 time_price_bar.insert_block_price_bar_range(
                                     block_numbers_to_pad.drain(..),
                                     &last_inserted_data,
@@ -236,21 +248,36 @@ impl TimePriceBars {
                                 updated_block_resolution_timestamps
                                     .push(padded_resolution_timestamp);
                             }
-                            TimePriceBar::Finalized(_) => {
+                            Some(TimePriceBar::Finalized(_)) => {
                                 error!("Expected Pending TimePriceBar at time {:?}, but found Finalized", ts);
                             }
                         }
+
                         resolution_timestamp_to_pad = Some(padded_resolution_timestamp);
                     }
 
                     block_numbers_to_pad.push(padded_block_number);
+
                     if padded_block_number == block_number - 1 {
-                        match self
-                            .data
-                            .entry(padded_resolution_timestamp)
-                            .or_insert_with(|| TimePriceBar::Pending(PendingTimePriceBar::new()))
-                        {
-                            TimePriceBar::Pending(time_price_bar) => {
+                        match self.data.get_mut(&padded_resolution_timestamp) {
+                            None => {
+                                let previous_close = self
+                                    .data
+                                    .get(&padded_resolution_timestamp.previous(&self.resolution))
+                                    .map(|time_price_bar| time_price_bar.close().clone());
+                                let mut time_price_bar = PendingTimePriceBar::new(previous_close);
+                                time_price_bar.insert_block_price_bar_range(
+                                    block_numbers_to_pad.drain(..),
+                                    &last_inserted_data,
+                                );
+                                self.data.insert(
+                                    padded_resolution_timestamp.clone(),
+                                    TimePriceBar::Pending(time_price_bar),
+                                );
+                                updated_block_resolution_timestamps
+                                    .push(padded_resolution_timestamp);
+                            }
+                            Some(TimePriceBar::Pending(time_price_bar)) => {
                                 time_price_bar.insert_block_price_bar_range(
                                     block_numbers_to_pad.drain(..),
                                     &last_inserted_data,
@@ -258,7 +285,7 @@ impl TimePriceBars {
                                 updated_block_resolution_timestamps
                                     .push(padded_resolution_timestamp);
                             }
-                            TimePriceBar::Finalized(_) => {
+                            Some(TimePriceBar::Finalized(_)) => {
                                 error!("Expected Pending TimePriceBar at time {:?}, but found Finalized", padded_resolution_timestamp);
                             }
                         }
@@ -268,12 +295,24 @@ impl TimePriceBars {
         }
 
         // Insert the new data into the time price bar
-        match self
-            .data
-            .entry(block_resolution_timestamp.clone())
-            .or_insert_with(|| TimePriceBar::Pending(PendingTimePriceBar::new()))
-        {
-            TimePriceBar::Pending(pending_time_price_bar)
+        match self.data.get_mut(&block_resolution_timestamp) {
+            None => {
+                let previous_close = self
+                    .data
+                    .get(&block_resolution_timestamp.previous(&self.resolution))
+                    .map(|time_price_bar| time_price_bar.close().clone());
+
+                // Insert the new time price bar with the previous close
+                let mut time_price_bar = PendingTimePriceBar::new(previous_close);
+                time_price_bar.insert_block_price_bar(block_number, data);
+                updated_block_resolution_timestamps.push(block_resolution_timestamp);
+
+                self.data.insert(
+                    block_resolution_timestamp.clone(),
+                    TimePriceBar::Pending(time_price_bar),
+                );
+            }
+            Some(TimePriceBar::Pending(pending_time_price_bar))
                 if pending_time_price_bar
                     .end_block_number()
                     .map(|end_block_number| end_block_number + 1 == block_number)
@@ -282,14 +321,14 @@ impl TimePriceBars {
                 pending_time_price_bar.insert_block_price_bar(block_number, data);
                 updated_block_resolution_timestamps.push(block_resolution_timestamp);
             }
-            TimePriceBar::Pending(_) => {
+            Some(TimePriceBar::Pending(_)) => {
                 return Err(eyre!(
                     "Attempted to insert non-contiguous block number {:?} into Pending TimePriceBar at time {:?}",
                     block_number,
                     block_resolution_timestamp
                 ));
             }
-            TimePriceBar::Finalized(_) => {
+            Some(TimePriceBar::Finalized(_)) => {
                 return Err(eyre!(
                     "Expected Pending TimePriceBar at time {:?} / number {:?}, but found Finalized",
                     block_timestamp,

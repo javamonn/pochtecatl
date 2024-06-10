@@ -62,14 +62,16 @@ pub struct PendingTimePriceBar {
     pub data: Option<TickData>,
     pub indicators: Option<Indicators>,
     pub block_price_bars: BTreeMap<BlockNumber, TickData>,
+    pub open: Option<U32F96>,
 }
 
 impl PendingTimePriceBar {
-    pub fn new() -> Self {
+    pub fn new(open: Option<U32F96>) -> Self {
         Self {
             block_price_bars: BTreeMap::new(),
             data: None,
             indicators: None,
+            open,
         }
     }
 
@@ -98,7 +100,7 @@ impl PendingTimePriceBar {
             }
         }
 
-        self.data = TickData::reduce(self.block_price_bars.values());
+        self.data = TickData::reduce(self.open, self.block_price_bars.values());
         self.indicators = None;
     }
 
@@ -125,7 +127,7 @@ impl PendingTimePriceBar {
         match self.data.as_mut() {
             Some(tick) if !did_overwrite => tick.add(&data),
             _ => {
-                self.data = TickData::reduce(self.block_price_bars.values());
+                self.data = TickData::reduce(self.open, self.block_price_bars.values());
             }
         };
         self.indicators = None;
@@ -140,7 +142,7 @@ impl PendingTimePriceBar {
         match self.data.as_mut() {
             Some(tick) if !did_overwrite => tick.add(&data),
             _ => {
-                self.data = TickData::reduce(self.block_price_bars.values());
+                self.data = TickData::reduce(self.open, self.block_price_bars.values());
             }
         };
         self.indicators = None;
@@ -232,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_pending_time_price_bar_data() -> Result<()> {
-        let mut time_price_bar = PendingTimePriceBar::new();
+        let mut time_price_bar = PendingTimePriceBar::new(None);
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
@@ -287,8 +289,39 @@ mod tests {
     }
 
     #[test]
+    fn test_pending_time_price_bar_data_with_open() -> Result<()> {
+        let mut time_price_bar = PendingTimePriceBar::new(Some(U32F96::from_num(2)));
+        time_price_bar.insert_block_price_bar(
+            1,
+            TickData::new(
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                0_u128.into(),
+            ),
+        );
+
+        assert_eq!(
+            time_price_bar
+                .data()
+                .clone()
+                .expect("Expected data but found None"),
+            TickData::new(
+                U32F96::from_num(2),
+                U32F96::ONE,
+                U32F96::ONE,
+                U32F96::ONE,
+                0_u128.into()
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_block_number() -> Result<()> {
-        let mut time_price_bar = PendingTimePriceBar::new();
+        let mut time_price_bar = PendingTimePriceBar::new(None);
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
@@ -329,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_prune_to_reorged_block_number() -> Result<()> {
-        let mut time_price_bar = PendingTimePriceBar::new();
+        let mut time_price_bar = PendingTimePriceBar::new(None);
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(
@@ -408,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_into_finalized() -> Result<()> {
-        let mut time_price_bar = PendingTimePriceBar::new();
+        let mut time_price_bar = PendingTimePriceBar::new(None);
         time_price_bar.insert_block_price_bar(
             1,
             TickData::new(

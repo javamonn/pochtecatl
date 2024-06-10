@@ -154,9 +154,12 @@ mod tests {
     use pochtecatl_db::{connect as connect_db, BlockModel};
     use pochtecatl_primitives::new_http_signer_provider;
 
+    use alloy::primitives::address;
+
     use eyre::Result;
-    use std::sync::Arc;
     use hex_literal::hex;
+    use std::sync::Arc;
+    use std::str::FromStr;
 
     #[tokio::test]
     async fn test_fetch_block_chunk_rpc() -> Result<()> {

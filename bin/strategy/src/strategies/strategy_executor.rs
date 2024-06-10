@@ -27,7 +27,9 @@ lazy_static! {
         // keycat
         address!("377FeeeD4820B3B28D1ab429509e7A0789824fCA"),
         // toshi
-        address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3")
+        address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3"),
+        // brett
+        address!("BA3F945812a83471d709BCe9C3CA699A19FB46f7")
     ];
 }
 
