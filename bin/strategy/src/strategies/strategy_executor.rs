@@ -24,8 +24,6 @@ lazy_static! {
     static ref TARGET_PAIR_ADDRESSES: Vec<Address> = vec![
         // degen
         address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA"),
-        // keycat
-        address!("377FeeeD4820B3B28D1ab429509e7A0789824fCA"),
         // toshi
         address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3"),
         // brett

@@ -6,6 +6,8 @@ pub enum Resolution {
     FiveMinutes,
     #[serde(rename = "1h")]
     OneHour,
+    #[serde(rename = "4h")]
+    FourHours,
 }
 
 impl Resolution {
@@ -13,6 +15,7 @@ impl Resolution {
         match self {
             Resolution::FiveMinutes => 300,
             Resolution::OneHour => 3600,
+            Resolution::FourHours => 14400,
         }
     }
 }

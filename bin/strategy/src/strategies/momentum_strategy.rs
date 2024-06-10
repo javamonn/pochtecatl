@@ -69,13 +69,6 @@ impl Strategy for MomentumStrategy {
                         } else if close < ema {
                             // Ensure close is above EMA
                             Err(eyre!("Close {:?} is below EMA {:?}", close, ema))
-                        } else if close > upper_band {
-                            // Ensure close is below upper band
-                            Err(eyre!(
-                                "Close {:?} is above upper band {:?}",
-                                close,
-                                upper_band
-                            ))
                         } else if sma_slope.is_negative() {
                             // Ensure SMA slope is positive
                             Err(eyre!("SMA slope {:?} is negative", sma_slope))
