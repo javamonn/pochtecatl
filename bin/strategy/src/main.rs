@@ -39,7 +39,7 @@ where
                     start.clone(),
                     end.clone(),
                     *config::IS_BACKTEST,
-                    Resolution::OneHour,
+                    Resolution::FourHours,
                 ))
             } else {
                 Err(eyre!(

@@ -4,9 +4,12 @@ use pochtecatl_primitives::{
 };
 
 use eyre::{eyre, Result};
+use std::ops::Bound;
 use tracing::debug;
 
 pub struct MomentumStrategy {}
+
+pub const TRADE_DEBOUNCE_SECONDS: u64 = 60 * 30;
 
 impl MomentumStrategy {
     pub fn new() -> Self {
@@ -15,163 +18,178 @@ impl MomentumStrategy {
 }
 
 impl Strategy for MomentumStrategy {
-    // TODO:
-    // - do not open if we've had another trade since the last ema over sma cross
-    // - do not open if we've had another trade in this time price bar
     fn should_open_position(
         &self,
         pair_time_price_bars: &TimePriceBars,
-        timestamp: &ResolutionTimestamp,
-        resolution: &Resolution,
+        block_timestamp: u64,
         previous_close_trade_metadata: Option<&TradeMetadata>,
     ) -> Result<()> {
-        pair_time_price_bars
-            .time_price_bar(timestamp)
-            .ok_or_else(|| eyre!("No time price bar found for pair",))
-            .and_then(|time_price_bar| {
-                // Ensure the most recent time price bar is positive
-                if time_price_bar
-                    .data()
-                    .map(|d| d.is_negative())
-                    .unwrap_or(true)
-                {
-                    return Err(eyre!("Time price bar is negative"));
-                }
+        if previous_close_trade_metadata.is_some_and(|previous_close_trade_metadata| {
+            block_timestamp - previous_close_trade_metadata.block_timestamp()
+                < TRADE_DEBOUNCE_SECONDS
+        }) {
+            return Err(eyre!("Trade debounce period not met"));
+        }
 
-                let previous_trade_resolution_ts =
-                    previous_close_trade_metadata.map(|previous_close_trade| {
-                        ResolutionTimestamp::from_timestamp(
-                            *previous_close_trade.block_timestamp(),
-                            &resolution,
-                        )
-                    });
+        let resolution_timestamp =
+            ResolutionTimestamp::from_timestamp(block_timestamp, pair_time_price_bars.resolution());
 
-                if previous_trade_resolution_ts.is_some_and(|previous_trade_resolution_ts| {
-                    previous_trade_resolution_ts == *timestamp
-                }) {
-                    // Ensure we did not open a position on the same time price bar
-                    return Err(eyre!("Previous trade closed on the same time price bar"));
-                }
+        let time_price_bar = pair_time_price_bars
+            .data()
+            .get(&resolution_timestamp)
+            .ok_or_else(|| eyre!("Failed to get time price bar"))?;
 
+        match time_price_bar.indicators() {
+            Some(Indicators {
+                bollinger_bands: Some((sma, _, _, _)),
+                ema: (ema, ema_slope),
+            }) => {
                 let close = time_price_bar.close();
+                if close < sma {
+                    return Err(eyre!("EMA {} is below SMA {}", ema, sma));
+                }
+                if ema_slope.is_negative() {
+                    return Err(eyre!("EMA slope {} is negative", ema_slope));
+                }
 
-                match time_price_bar.indicators() {
-                    Some(Indicators {
-                        ema: (ema, ema_slope),
-                        bollinger_bands: Some((sma, upper_band, _, sma_slope)),
-                    }) => {
-                        if ema < sma {
-                            // Ensure EMA is above SMA
-                            Err(eyre!("EMA {:?} is below SMA {:?}", ema, sma))
-                        } else if ema_slope.is_negative() {
-                            // Ensure EMA slope is positive
-                            Err(eyre!("EMA slope {:?} is negative", ema_slope))
-                        } else if close < ema {
-                            // Ensure close is above EMA
-                            Err(eyre!("Close {:?} is below EMA {:?}", close, ema))
-                        } else if sma_slope.is_negative() {
-                            // Ensure SMA slope is positive
-                            Err(eyre!("SMA slope {:?} is negative", sma_slope))
-                        } else if previous_trade_resolution_ts.is_some_and(
-                            |previous_trade_resolution_ts| {
-                                let mut previous_ema_sma_cross_ts = timestamp;
-                                for (ts, time_price_bar) in pair_time_price_bars.data().iter().rev()
+                // If we've already traded this ema -> sma cross, we should not open a new
+                // position
+                let have_traded_cross = previous_close_trade_metadata
+                    .map(|metadata| {
+                        // The resolution timestamp of the previous close trade
+                        let previous_close_resolution_ts = ResolutionTimestamp::from_timestamp(
+                            *metadata.block_timestamp(),
+                            pair_time_price_bars.resolution(),
+                        );
+                        // The most recent resolution timestamp where the EMA crossed above the SMA
+                        let last_ema_sma_cross = {
+                            let mut previous_ema_sma_cross_ts = &resolution_timestamp;
+                            for (ts, time_price_bar) in pair_time_price_bars.data().iter().rev() {
+                                if let Some(Indicators {
+                                    ema: (ema, _),
+                                    bollinger_bands: Some((sma, _, _, _)),
+                                }) = time_price_bar.indicators()
                                 {
-                                    if let Some(Indicators {
-                                        ema: (ema, _),
-                                        bollinger_bands: Some((sma, _, _, _)),
-                                    }) = time_price_bar.indicators()
-                                    {
-                                        if ema < sma {
-                                            break;
-                                        } else {
-                                            previous_ema_sma_cross_ts = ts;
-                                        }
+                                    if ema < sma {
+                                        break;
+                                    } else {
+                                        previous_ema_sma_cross_ts = ts;
                                     }
                                 }
+                            }
+                            previous_ema_sma_cross_ts
+                        };
 
-                                previous_trade_resolution_ts >= *previous_ema_sma_cross_ts
-                            },
-                        ) {
-                            // Ensure we did not previously close a trade on the same EMA -> SMA cross
-                            Err(eyre!(
-                                "Previous trade closed on the same EMA over SMA cross"
-                            ))
-                        } else {
-                            debug!(
-                                close = close.to_string(),
-                                ema = ema.to_string(),
-                                sma = sma.to_string(),
-                                ema_slope = ema_slope.to_string(),
-                                "should_open_position"
-                            );
-                            Ok(())
-                        }
-                    }
-                    Some(_) => Err(eyre!("No bollinger bands found for pair.")),
-                    None => Err(eyre!("No indicators found for pair.",)),
+                        previous_close_resolution_ts >= *last_ema_sma_cross
+                    })
+                    .unwrap_or(false);
+
+                if have_traded_cross {
+                    return Err(eyre!("Have traded EMA over SMA cross"));
                 }
-            })
+
+                Ok(())
+            }
+            _ => Err(eyre!("Failed to get indicators")),
+        }
     }
 
     fn should_close_position(
         &self,
         pair_time_price_bars: &TimePriceBars,
-        now_block_resolution_timestamp: &ResolutionTimestamp,
-        resolution: &Resolution,
+        block_timestamp: u64,
         open_trade_metadata: &TradeMetadata,
     ) -> Result<()> {
-        let open_block_resolution_timestamp = &ResolutionTimestamp::from_timestamp(
+        let resolution_timestamp =
+            ResolutionTimestamp::from_timestamp(block_timestamp, pair_time_price_bars.resolution());
+        let time_price_bar = pair_time_price_bars
+            .data()
+            .get(&resolution_timestamp)
+            .ok_or_else(|| eyre!("Failed to get time price bar"))?;
+
+        let close = time_price_bar.close();
+        let open_trade_token_price_before = open_trade_metadata
+            .indexed_trade()
+            .token_price_before(open_trade_metadata.token_address());
+
+        // Do not close the position if we opened it within the same resolution timestamp unless it
+        // is strongly moving against us
+        if ResolutionTimestamp::from_timestamp(
             *open_trade_metadata.block_timestamp(),
-            &resolution,
-        );
+            pair_time_price_bars.resolution(),
+        ) == resolution_timestamp
+        {
+            if *close < open_trade_token_price_before
+                && time_price_bar.data().is_some_and(|d| d.is_negative())
+            {
+                // stop loss
+                debug!("closing: stop loss");
+                return Ok(());
+            }
 
-        pair_time_price_bars
-            .time_price_bar(now_block_resolution_timestamp)
-            .ok_or_else(|| eyre!("No time price bar found for pair",))
-            .and_then(|time_price_bar| {
-                match time_price_bar.indicators() {
-                    Some(Indicators {
-                        bollinger_bands: Some((sma, _, _, sma_slope)),
-                        ema: (ema, ema_slope),
-                    }) => {
-                        // Ensure the most recent time price bar is negative
-                        if time_price_bar
-                            .data()
-                            .map(|d| !d.is_negative())
-                            .unwrap_or(true)
-                        {
-                            return Err(eyre!("Time price bar is not negative"));
-                        }
+            return Err(eyre!("Opened trade at current resolution timestamp"));
+        }
 
-                        // Close if EMA is below SMA
-                        if ema < sma {
-                            return Ok(());
-                        }
-
-                        // Close if Close is below SMA and prev SMA slope closed negative
-                        if time_price_bar.close() < sma
-                            && pair_time_price_bars
-                                .data()
-                                .get(
-                                    &now_block_resolution_timestamp
-                                        .previous(resolution)
-                                        .max(*open_block_resolution_timestamp),
-                                )
-                                .and_then(|t| t.indicators())
-                                .and_then(|i| i.bollinger_bands)
-                                .is_some_and(|(_, _, _, prev_sma_slope)| {
-                                    prev_sma_slope.is_negative()
-                                })
-                        {
-                            return Ok(());
-                        }
-
-                        Err(eyre!("Should close position"))
-                    }
-                    Some(_) => Err(eyre!("No bollinger bands found for pair.")),
-                    None => Err(eyre!("No indicators found for pair.")),
+        match time_price_bar.indicators() {
+            Some(Indicators {
+                bollinger_bands: Some((sma, _, _, _)),
+                ema: (ema, ema_slope),
+            }) => {
+                if ema_slope.is_negative() && close < sma && *close < open_trade_token_price_before
+                {
+                    debug!("closing: close {} is below sma {}", close, sma);
+                    return Ok(());
                 }
-            })
+
+                if ema_slope.is_negative() && ema < sma {
+                    debug!("closing: ema {} is below sma {}", ema, sma);
+                    return Ok(());
+                }
+
+                let have_crossed_bb_upper = pair_time_price_bars
+                    .data()
+                    .range((
+                        Bound::Included(ResolutionTimestamp::from_timestamp(
+                            *open_trade_metadata.block_timestamp(),
+                            pair_time_price_bars.resolution(),
+                        )),
+                        Bound::Included(resolution_timestamp),
+                    ))
+                    .rev()
+                    .any(|(ts, time_price_bar)| {
+                        if let Some(Indicators {
+                            bollinger_bands: Some((_, bb_upper, _, _)),
+                            ..
+                        }) = time_price_bar.indicators()
+                        {
+                            if time_price_bar.close() > bb_upper {
+                                debug!(
+                                    "close {} crossed bb upper {} at {}",
+                                    time_price_bar.close(),
+                                    bb_upper,
+                                    ts.0
+                                );
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    });
+
+                if have_crossed_bb_upper && ema_slope.is_negative() {
+                    debug!(
+                        "closing: crossed bb upper and negative ema slope {}",
+                        ema_slope
+                    );
+                    return Ok(());
+                }
+
+                // Close conditions not met
+                return Err(eyre!("Close conditions not met"));
+            }
+            _ => Err(eyre!("Failed to get indicators")),
+        }
     }
 }

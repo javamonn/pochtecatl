@@ -2,10 +2,10 @@ use super::Strategy;
 
 use crate::{
     indexer::TimePriceBarStore,
-    trade_controller::{AddressTrades, Trade, TradeController, TradeRequest},
+    trade_controller::{Trade, TradeController, TradeRequest},
 };
 
-use pochtecatl_primitives::{BlockMessage, ResolutionTimestamp, TradeRequestOp};
+use pochtecatl_primitives::{BlockMessage, TradeRequestOp};
 
 use alloy::{
     network::Ethereum,
@@ -27,7 +27,9 @@ lazy_static! {
         // toshi
         address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3"),
         // brett
-        address!("BA3F945812a83471d709BCe9C3CA699A19FB46f7")
+        address!("BA3F945812a83471d709BCe9C3CA699A19FB46f7"),
+        // mfer
+        address!("7EC18ABf80E865c6799069df91073335935C4185")
     ];
 }
 
@@ -64,11 +66,6 @@ where
         {
             let trades = self.trade_controller.trades().0.read().unwrap();
             let time_price_bars = time_price_bar_store.time_price_bars().read().unwrap();
-
-            let resolution = time_price_bar_store.resolution();
-            let resolution_timestamp =
-                ResolutionTimestamp::from_timestamp(block_message.block_timestamp, &resolution);
-
             for pair in block_message.pairs.into_iter() {
                 if cfg!(feature = "local") && !TARGET_PAIR_ADDRESSES.contains(&pair.address()) {
                     continue;
@@ -94,8 +91,7 @@ where
                         .strategy
                         .should_open_position(
                             &pair_time_price_bars,
-                            &resolution_timestamp,
-                            &resolution,
+                            block_message.block_timestamp,
                             last_closed_trade,
                         )
                         .inspect_err(|err| {
@@ -123,8 +119,7 @@ where
                         .strategy
                         .should_close_position(
                             &pair_time_price_bars,
-                            &resolution_timestamp,
-                            &resolution,
+                            block_message.block_timestamp,
                             &open_trade_metadata,
                         )
                         .inspect_err(|err| {
