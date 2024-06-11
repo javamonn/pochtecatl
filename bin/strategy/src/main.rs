@@ -38,7 +38,6 @@ where
                     db_pool,
                     start.clone(),
                     end.clone(),
-                    *config::IS_BACKTEST,
                     Resolution::FourHours,
                 ))
             } else {

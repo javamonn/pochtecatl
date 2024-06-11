@@ -1,37 +1,18 @@
 use super::Strategy;
 
 use crate::{
-    indexer::TimePriceBarStore,
+    indexer::{TimePriceBarBlockMessage, TimePriceBarController},
     trade_controller::{Trade, TradeController, TradeRequest},
 };
 
-use pochtecatl_primitives::{BlockMessage, TradeRequestOp};
+use pochtecatl_primitives::TradeRequestOp;
 
-use alloy::{
-    network::Ethereum,
-    primitives::{address, Address},
-    providers::Provider,
-    transports::Transport,
-};
+use alloy::{network::Ethereum, providers::Provider, transports::Transport};
 use chrono::DateTime;
 use eyre::Result;
-use lazy_static::lazy_static;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument};
-
-lazy_static! {
-    static ref TARGET_PAIR_ADDRESSES: Vec<Address> = vec![
-        // degen
-        address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA"),
-        // toshi
-        address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3"),
-        // brett
-        address!("BA3F945812a83471d709BCe9C3CA699A19FB46f7"),
-        // mfer
-        address!("7EC18ABf80E865c6799069df91073335935C4185")
-    ];
-}
 
 pub struct StrategyExecutor<T, P>
 where
@@ -55,22 +36,18 @@ where
     }
 
     #[instrument(skip_all)]
-    pub async fn on_indexed_block_message(
+    pub async fn on_time_price_bar_block_message(
         &self,
-        block_message: BlockMessage,
-        time_price_bar_store: &TimePriceBarStore,
+        block_message: TimePriceBarBlockMessage,
+        time_price_bar_controller: &TimePriceBarController,
     ) -> Result<()> {
         let mut pending_tx_tasks = JoinSet::new();
 
         // Execute core strategy logic
         {
             let trades = self.trade_controller.trades().0.read().unwrap();
-            let time_price_bars = time_price_bar_store.time_price_bars().read().unwrap();
-            for pair in block_message.pairs.into_iter() {
-                if cfg!(feature = "local") && !TARGET_PAIR_ADDRESSES.contains(&pair.address()) {
-                    continue;
-                }
-
+            let time_price_bars = time_price_bar_controller.time_price_bars().read().unwrap();
+            for pair in block_message.updated_pairs.into_iter() {
                 // note that time price bars are by pair, trades are by token
                 let pair_time_price_bars =
                     time_price_bars.get(pair.address()).unwrap_or_else(|| {

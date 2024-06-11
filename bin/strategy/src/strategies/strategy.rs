@@ -1,4 +1,4 @@
-use pochtecatl_primitives::{Resolution, ResolutionTimestamp, TimePriceBars, TradeMetadata};
+use pochtecatl_primitives::{TimePriceBars, TradeMetadata};
 
 use eyre::Result;
 

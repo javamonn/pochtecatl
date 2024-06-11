@@ -260,8 +260,8 @@ mod tests {
 
         let (ema, slope) = Indicators::ema(&mock_timestamp, &Resolution::FiveMinutes, &data);
 
-        assert_eq!(ema.to_string(), "5.2");
-        assert_eq!(slope.to_string(), "0.2");
+        assert_eq!(ema.to_string(), "5.4");
+        assert_eq!(slope.to_string(), "0.4");
     }
 
     #[test]

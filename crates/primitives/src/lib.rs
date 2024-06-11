@@ -7,7 +7,6 @@ pub use dex::{
 };
 
 pub use block_id::BlockId;
-pub use block_message::BlockMessage;
 pub use fixed::*;
 pub use rpc_provider::{new_http_signer_provider, RpcProvider, TTLCache};
 pub use tick_data::TickData;
@@ -20,7 +19,6 @@ pub use trade_metadata::TradeMetadata;
 mod abi;
 mod block;
 mod block_id;
-mod block_message;
 mod dex;
 mod rpc_provider;
 mod tick_data;

@@ -1,5 +1,6 @@
 use pochtecatl_primitives::{
-    constants, Block, IndicatorsConfig, Resolution, ResolutionTimestamp, RpcProvider, TimePriceBars,
+    constants, Block, IndicatorsConfig, Resolution, ResolutionTimestamp, RpcProvider, TimePriceBar,
+    TimePriceBars,
 };
 
 use alloy::{
@@ -11,28 +12,45 @@ use alloy::{
 
 use eyre::{Context, Result};
 use fnv::FnvHashMap;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, instrument, warn};
 
-pub struct TimePriceBarStore {
+use super::TimePriceBarBlockMessage;
+
+pub struct TimePriceBarController {
     resolution: Resolution,
     time_price_bars: RwLock<FnvHashMap<Address, TimePriceBars>>,
     retention_count: u64,
+    pair_address_allowlist: Option<Vec<Address>>,
     is_backtest: bool,
+
+    db_provider: Arc<Pool<SqliteConnectionManager>>,
 
     last_inserted_block_number: RwLock<Option<BlockNumber>>,
     last_pruned_at_block_number: RwLock<Option<BlockNumber>>,
+    pending_time_price_bar_finalizations: RwLock<Vec<(Address, ResolutionTimestamp)>>,
 }
 
-impl TimePriceBarStore {
-    pub fn new(resolution: Resolution, retention_count: u64, is_backtest: bool) -> Self {
+impl TimePriceBarController {
+    pub fn new(
+        resolution: Resolution,
+        retention_count: u64,
+        pair_address_allowlist: Option<Vec<Address>>,
+        is_backtest: bool,
+        db_provider: Arc<Pool<SqliteConnectionManager>>,
+    ) -> Self {
         Self {
             resolution,
             time_price_bars: RwLock::new(FnvHashMap::default()),
             retention_count,
+            pair_address_allowlist,
             is_backtest,
+            db_provider,
             last_inserted_block_number: RwLock::new(None),
             last_pruned_at_block_number: RwLock::new(None),
+            pending_time_price_bar_finalizations: RwLock::new(Vec::new()),
         }
     }
 
@@ -40,13 +58,55 @@ impl TimePriceBarStore {
         &self.time_price_bars
     }
 
-    pub fn resolution(&self) -> &Resolution {
-        &self.resolution
-    }
-
     #[cfg(test)]
     pub fn last_inserted_block_number(&self) -> Option<BlockNumber> {
         *self.last_inserted_block_number.read().unwrap()
+    }
+
+    fn persist_time_price_bar_finalizations(&self) -> Result<()> {
+        let mut time_price_bar_finalizations_to_persist =
+            self.pending_time_price_bar_finalizations.write().unwrap();
+
+        if time_price_bar_finalizations_to_persist.is_empty() {
+            return Ok(());
+        }
+
+        let mut db_conn = self.db_provider.get()?;
+        let time_price_bars = self.time_price_bars.read().unwrap();
+        let tx = db_conn.transaction()?;
+
+        for (pair_address, timestamp) in time_price_bar_finalizations_to_persist.drain(..) {
+            match time_price_bars
+                .get(&pair_address)
+                .and_then(|bars| bars.data().get(&timestamp))
+                .and_then(|bar| match bar {
+                    TimePriceBar::Finalized(b) => Some(b),
+                    _ => None,
+                }) {
+                Some(finalized_time_price_bar) => {
+                    let _ = finalized_time_price_bar
+                        .as_backtest_time_price_bar_model(pair_address, &self.resolution, timestamp)
+                        .and_then(|row| row.insert(&tx).map_err(Into::into))
+                        .inspect_err(|e| {
+                            warn!(
+                                pair_address = pair_address.to_string(),
+                                timestamp = timestamp.0,
+                                "Failed to insert finalized time price bar: {:?}",
+                                e
+                            );
+                        });
+                }
+                _ => {
+                    warn!(
+                        pair_address = pair_address.to_string(),
+                        timestamp = timestamp.0,
+                        "No finalized time price bar found"
+                    );
+                }
+            }
+        }
+
+        tx.commit().map_err(Into::into)
     }
 
     #[instrument(skip_all)]
@@ -54,7 +114,7 @@ impl TimePriceBarStore {
         &self,
         rpc_provider: Arc<RpcProvider<T, P>>,
         block: &Block,
-    ) -> Result<Option<Vec<(Address, ResolutionTimestamp)>>>
+    ) -> Result<TimePriceBarBlockMessage>
     where
         T: Transport + Clone,
         P: Provider<T, Ethereum> + 'static,
@@ -84,9 +144,15 @@ impl TimePriceBarStore {
         };
 
         // Insert the new block price bars
-        let mut newly_finalized_pair_timestamps = None;
+        let mut updated_pairs = self
+            .pair_address_allowlist
+            .as_ref()
+            .map(|v| Vec::with_capacity(v.len()))
+            .unwrap_or_else(|| Vec::new());
         {
             let mut time_price_bars = self.time_price_bars.write().unwrap();
+            let mut pending_time_price_bar_finalizations =
+                self.pending_time_price_bar_finalizations.write().unwrap();
 
             // If this block is behind the last inserted block number, this is a reorg
             // and we need to prune existing data
@@ -119,9 +185,18 @@ impl TimePriceBarStore {
                 }
             }
 
-            // Insert new BlockPriceBar items into time_price_bars and commit any newly finalized
-            // time price bars to db
+            // Insert new BlockPriceBar items into time_price_bars
             for (pair_address, pair) in block.pair_ticks.iter() {
+                if self
+                    .pair_address_allowlist
+                    .as_ref()
+                    .is_some_and(|allowlist| !allowlist.contains(&pair_address))
+                {
+                    continue;
+                } else {
+                    updated_pairs.push(pair.pair());
+                }
+
                 let time_price_bars =
                     time_price_bars
                         .entry(pair_address.clone())
@@ -147,19 +222,13 @@ impl TimePriceBarStore {
                         )
                     })?;
 
-                // Add any finalized time price bars to the commit list if this is a
-                // backtest
-                match finalized_resolution_timestamps {
-                    Some(finalized_resolution_timestamps) if self.is_backtest => {
-                        newly_finalized_pair_timestamps
-                            .get_or_insert_with(|| Vec::new())
-                            .extend(
-                                finalized_resolution_timestamps
-                                    .into_iter()
-                                    .map(|ts| (pair_address.clone(), ts)),
-                            );
+                // Add any finalized time price bars to the pending commit list if
+                // this is a backtest
+                if self.is_backtest {
+                    if let Some(ts) = finalized_resolution_timestamps {
+                        pending_time_price_bar_finalizations
+                            .extend(ts.into_iter().map(|ts| (pair_address.clone(), ts)));
                     }
-                    _ => { /* noop */ }
                 }
             }
 
@@ -211,14 +280,23 @@ impl TimePriceBarStore {
             *last_inserted_block_number = Some(block.block_number)
         }
 
-        Ok(newly_finalized_pair_timestamps)
+        // Write any newly finalized time price bars to the db if backtest
+        if self.is_backtest {
+            self.persist_time_price_bar_finalizations()?;
+        }
+
+        Ok(TimePriceBarBlockMessage::new(
+            block.block_number,
+            block.block_timestamp,
+            updated_pairs,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::TimePriceBarStore;
-    use crate::{config, indexer::BlockChunk};
+    use super::TimePriceBarController;
+    use crate::{config, connect as connect_db, indexer::BlockChunk};
 
     use pochtecatl_primitives::{
         new_http_signer_provider, Block, BlockBuilder, IndexedTrade, Resolution,
@@ -227,7 +305,7 @@ mod tests {
 
     use alloy::{
         network::Ethereum,
-        primitives::{address, uint, BlockNumber, B256},
+        primitives::{address, uint, BlockNumber},
         providers::Provider,
         rpc::types::eth::Filter,
         transports::Transport,
@@ -276,7 +354,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_blocks() -> Result<()> {
-        let store = TimePriceBarStore::new(Resolution::FiveMinutes, 60, true);
+        let store = TimePriceBarController::new(
+            Resolution::FiveMinutes,
+            60,
+            Some(vec![address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA")]),
+            true,
+            Arc::new(connect_db(&String::from(":memory:"))?),
+        );
         let rpc_provider = Arc::new(
             new_http_signer_provider(
                 url::Url::parse(config::RPC_URL.as_str())?,
@@ -324,7 +408,7 @@ mod tests {
                     .ema
                     .0
                     .to_string(),
-                "0.00000621734376418372075970034",
+                "0.00000621328473549258599461557",
             )
         }
 
@@ -368,7 +452,13 @@ mod tests {
 
         // test base case
         {
-            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5, true);
+            let store = TimePriceBarController::new(
+                Resolution::FiveMinutes,
+                5,
+                Some(vec![address!("c1c52be5c93429be50f5518a582f690d0fc0528a")]),
+                true,
+                Arc::new(connect_db(&String::from(":memory:"))?),
+            );
             let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
             store
                 .insert_block(Arc::clone(&rpc_provider), &block)
@@ -451,7 +541,13 @@ mod tests {
 
         // test base case
         {
-            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5, false);
+            let store = TimePriceBarController::new(
+                Resolution::FiveMinutes,
+                5,
+                Some(vec![address!("c1c52be5c93429be50f5518a582f690d0fc0528a")]),
+                false,
+                Arc::new(connect_db(&String::from(":memory:"))?),
+            );
             let block = get_block(Arc::clone(&rpc_provider), 12822402).await?;
             store
                 .insert_block(Arc::clone(&rpc_provider), &block)
@@ -496,7 +592,13 @@ mod tests {
 
         // test reorg handling
         {
-            let store = TimePriceBarStore::new(Resolution::FiveMinutes, 5, false);
+            let store = TimePriceBarController::new(
+                Resolution::FiveMinutes,
+                5,
+                None,
+                false,
+                Arc::new(connect_db(&String::from(":memory:"))?),
+            );
             let mut blocks = Vec::new();
 
             // Insert blocks in order

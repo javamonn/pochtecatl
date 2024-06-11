@@ -1,7 +1,5 @@
 use super::Strategy;
-use pochtecatl_primitives::{
-    Indicators, Resolution, ResolutionTimestamp, TimePriceBars, TradeMetadata,
-};
+use pochtecatl_primitives::{Indicators, ResolutionTimestamp, TimePriceBars, TradeMetadata};
 
 use eyre::{eyre, Result};
 use std::ops::Bound;
