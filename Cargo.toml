@@ -53,6 +53,7 @@ r2d2_sqlite = "0.24.0"
 # misc
 serde = { version = "1.0", default_features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default_features = false, features = ["alloc", "arbitrary_precision"] }
+tower = { version = "0.4.13", features = ["util", "timeout", "retry"] }
 eyre = "0.6.12"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "json"] }

@@ -28,7 +28,7 @@ where
 {
     pub fn new(inner: Arc<P>) -> Self {
         Self {
-            pair_cache: Mutex::new(LruCache::new(NonZeroUsize::new(2500).unwrap())),
+            pair_cache: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
             inner,
             _transport_marker: std::marker::PhantomData,
         }

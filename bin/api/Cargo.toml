@@ -18,7 +18,7 @@ alloy.workspace = true
 # http
 axum = { version = "0.7.5", features = ["macros"] }
 tower-http = { version = "0.5.2", features = ["add-extension", "trace", "cors"] }
-tower = { version = "0.4.13", features = ["util", "timeout"] }
+tower.workspace = true
 
 # db
 rusqlite.workspace = true

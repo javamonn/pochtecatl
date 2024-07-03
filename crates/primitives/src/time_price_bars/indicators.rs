@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, ops::Bound};
 use tracing::warn;
 
 pub const INDICATOR_BB_PERIOD: u64 = 20;
-pub const INDICATOR_EMA_PERIOD: u64 = 4;
+pub const INDICATOR_EMA_PERIOD: u64 = 9;
 
 lazy_static! {
     pub static ref Q_INDICATOR_BB_PERIOD: U32F96 = FixedU128::from_num(INDICATOR_BB_PERIOD);

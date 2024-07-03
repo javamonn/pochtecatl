@@ -9,7 +9,7 @@ use alloy::{
 };
 
 use eyre::Result;
-use tracing::{debug, instrument};
+use tracing::instrument;
 
 pub struct BlockBuilder {
     pub block_number: BlockNumber,
@@ -72,14 +72,8 @@ impl BlockBuilder {
                         builder.block_timestamp,
                     ),
                     |mut block, trade| {
-                        match pairs.get(trade.pair_address()) {
-                            Some(pair) => block.add_trade(trade, pair),
-                            None => {
-                                debug!(
-                                    pair_address = trade.pair_address().to_string(),
-                                    "invalid pair",
-                                );
-                            }
+                        if let Some(pair) = pairs.get(trade.pair_address()) {
+                            block.add_trade(trade, pair)
                         }
 
                         block
@@ -105,8 +99,8 @@ mod tests {
         rpc::types::eth::Filter,
     };
 
-    use hex_literal::hex;
     use eyre::Result;
+    use hex_literal::hex;
     use num_bigint::BigUint;
     use std::sync::Arc;
 

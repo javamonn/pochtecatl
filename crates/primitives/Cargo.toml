@@ -26,4 +26,5 @@ fixed.workspace = true
 num-bigint.workspace = true
 lazy_static.workspace = true
 hex-literal.workspace = true
+tower.workspace = true
 lru = "0.12.3"

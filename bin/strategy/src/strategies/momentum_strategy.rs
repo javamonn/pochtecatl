@@ -42,8 +42,7 @@ impl Strategy for MomentumStrategy {
                 bollinger_bands: Some((sma, _, _, _)),
                 ema: (ema, ema_slope),
             }) => {
-                let close = time_price_bar.close();
-                if close < sma {
+                if ema < sma {
                     return Err(eyre!("EMA {} is below SMA {}", ema, sma));
                 }
                 if ema_slope.is_negative() {

@@ -14,7 +14,7 @@ use eyre::{OptionExt, Result};
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 lazy_static! {
     pub static ref PRICE_FACTOR: BigUint = BigUint::from(2_u128).pow(96);
@@ -118,13 +118,6 @@ impl TryFrom<&IndexedTradeParseContext<'_>> for UniswapV3IndexedTrade {
             .and_then(|log| abi::uniswap_v3_pool::try_parse_swap_event(log))
             .ok_or_eyre("Failed to parse UniswapV3PoolSwapLog")
             .and_then(|parsed_swap| {
-                if parsed_swap.liquidity == 0 {
-                    warn!(
-                        "Zero liquidity in UniswapV3IndexedTrade: {:?}",
-                        value.logs().get(value.idx())
-                    );
-                }
-
                 Ok(Self::new(
                     parsed_swap.address,
                     parsed_swap.recipient,
@@ -143,8 +136,8 @@ mod tests {
 
     use alloy::primitives::{address, fixed_bytes};
 
-    use hex_literal::hex;
     use eyre::{OptionExt, Result};
+    use hex_literal::hex;
 
     #[tokio::test]
     async fn test_try_from_log() -> Result<()> {

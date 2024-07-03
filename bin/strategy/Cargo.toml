@@ -41,5 +41,3 @@ dotenvy.workspace = true
 hex = "0.4.3"
 chrono = "0.4.38"
 tracing-appender = "0.2.3"
-
-
