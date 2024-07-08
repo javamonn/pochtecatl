@@ -2,12 +2,11 @@ use super::Strategy;
 use pochtecatl_primitives::{Indicators, ResolutionTimestamp, TimePriceBars, TradeMetadata};
 
 use eyre::{eyre, Result};
-use std::ops::Bound;
 use tracing::debug;
 
 pub struct MomentumStrategy {}
 
-pub const TRADE_DEBOUNCE_SECONDS: u64 = 60 * 30;
+pub const TRADE_DEBOUNCE_SECONDS: u64 = 60 * 60;
 
 impl MomentumStrategy {
     pub fn new() -> Self {
@@ -104,27 +103,8 @@ impl Strategy for MomentumStrategy {
             .get(&resolution_timestamp)
             .ok_or_else(|| eyre!("Failed to get time price bar"))?;
 
-        let close = time_price_bar.close();
-        let open_trade_token_price_before = open_trade_metadata
-            .indexed_trade()
-            .token_price_before(open_trade_metadata.token_address());
-
-        // Do not close the position if we opened it within the same resolution timestamp unless it
-        // is strongly moving against us
-        if ResolutionTimestamp::from_timestamp(
-            *open_trade_metadata.block_timestamp(),
-            pair_time_price_bars.resolution(),
-        ) == resolution_timestamp
-        {
-            if *close < open_trade_token_price_before
-                && time_price_bar.data().is_some_and(|d| d.is_negative())
-            {
-                // stop loss
-                debug!("closing: stop loss");
-                return Ok(());
-            }
-
-            return Err(eyre!("Opened trade at current resolution timestamp"));
+        if block_timestamp - open_trade_metadata.block_timestamp() < TRADE_DEBOUNCE_SECONDS {
+            return Err(eyre!("Trade debounce period not met"));
         }
 
         match time_price_bar.indicators() {
@@ -132,54 +112,18 @@ impl Strategy for MomentumStrategy {
                 bollinger_bands: Some((sma, _, _, _)),
                 ema: (ema, ema_slope),
             }) => {
-                if ema_slope.is_negative() && close < sma && *close < open_trade_token_price_before
-                {
-                    debug!("closing: close {} is below sma {}", close, sma);
-                    return Ok(());
-                }
-
                 if ema_slope.is_negative() && ema < sma {
                     debug!("closing: ema {} is below sma {}", ema, sma);
                     return Ok(());
                 }
 
-                let have_crossed_bb_upper = pair_time_price_bars
-                    .data()
-                    .range((
-                        Bound::Included(ResolutionTimestamp::from_timestamp(
-                            *open_trade_metadata.block_timestamp(),
-                            pair_time_price_bars.resolution(),
-                        )),
-                        Bound::Included(resolution_timestamp),
-                    ))
-                    .rev()
-                    .any(|(ts, time_price_bar)| {
-                        if let Some(Indicators {
-                            bollinger_bands: Some((_, bb_upper, _, _)),
-                            ..
-                        }) = time_price_bar.indicators()
-                        {
-                            if time_price_bar.close() > bb_upper {
-                                debug!(
-                                    "close {} crossed bb upper {} at {}",
-                                    time_price_bar.close(),
-                                    bb_upper,
-                                    ts.0
-                                );
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    });
-
-                if have_crossed_bb_upper && ema_slope.is_negative() {
-                    debug!(
-                        "closing: crossed bb upper and negative ema slope {}",
-                        ema_slope
-                    );
+                // Stop loss
+                if open_trade_metadata
+                    .indexed_trade()
+                    .token_price_before(open_trade_metadata.token_address())
+                    < *time_price_bar.close()
+                {
+                    debug!("closing: stop loss");
                     return Ok(());
                 }
 

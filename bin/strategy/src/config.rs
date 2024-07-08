@@ -74,13 +74,7 @@ lazy_static! {
 
     // FIXME: this should be configurable at runtime
     pub static ref PAIR_ADDRESS_ALLOWLIST: Vec<Address> = vec![
-        // degen
-        address!("c9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA"),
-        // toshi
-        address!("4b0Aaf3EBb163dd45F663b38b6d93f6093EBC2d3"),
         // brett
-        address!("BA3F945812a83471d709BCe9C3CA699A19FB46f7"),
-        // mfer
-        address!("7EC18ABf80E865c6799069df91073335935C4185")
+        address!("76Bf0abD20f1e0155Ce40A62615a90A709a6C3D8"),
     ];
 }
